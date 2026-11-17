@@ -1,0 +1,26 @@
+# Changelog
+
+Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
+
+## 18 November 2026
+
+- 5,000,000 HOLBRIC (0.5% of the 1,000,000,000 supply) was sent to the public Holbric fomo account `0x8f4c85fb8423314f7537f3dacd4e6970b198ea0a`. Transaction: [0x1c3ac44913036ba0ab812192724bfabca1e79ef82f06ea808b9f632c35f33e0e](https://robinhoodchain.blockscout.com/tx/0x1c3ac44913036ba0ab812192724bfabca1e79ef82f06ea808b9f632c35f33e0e).
+
+## 0.2.0 — 17 November 2026
+
+First public release of the Holbric MCP server. 19 tools across 6 projects on Robinhood Chain mainnet (chain id 4663):
+
+- Wallet (6): `wallet_address`, `chain_status`, `get_balances`, `token_info`, `prepare_send`, `execute_prepared`
+- Uniswap v3 (2): `quote_swap`, `prepare_swap`
+- Robinhood Stock Tokens (2): `stock_tokens`, `stock_quote`
+- Pons V2 (4): `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`
+- ERC-8004 (3): `agent_identity`, `agent_reputation`, `prepare_register_agent`
+- GeckoTerminal (2): `market_token`, `market_trending`
+
+Install from the release tarball at [holbric.com/dl/holbric-0.2.0.tgz](https://holbric.com/dl/holbric-0.2.0.tgz). The package is not on the npm registry yet.
+
+The same day:
+
+- [holbric.com](https://holbric.com) went live.
+- $HOLBRIC launched on Pons V2. Contract `0xE8D6AE09757769968d17eab44998A03E196217e7`, 18 decimals, total supply 1,000,000,000. Launch transaction: [0xd2fab0c31d23479800798e20838d487e0fead8412edc518fa885a6f3080ebaa9](https://robinhoodchain.blockscout.com/tx/0xd2fab0c31d23479800798e20838d487e0fead8412edc518fa885a6f3080ebaa9).
+- 10,851,197.87 HOLBRIC (1.0851% of supply) was sent to the dead address `0x000000000000000000000000000000000000dEaD`. Transaction: [0x414093ea8e5e3ffba441e9a4420210c63af0763f25cec72efdcc5387f24586c7](https://robinhoodchain.blockscout.com/tx/0x414093ea8e5e3ffba441e9a4420210c63af0763f25cec72efdcc5387f24586c7).
