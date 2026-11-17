@@ -29,14 +29,29 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 24 (got ${tools.tools.length})`, tools.tools.length === 24);
+check(`tool count is 25 (got ${tools.tools.length})`, tools.tools.length === 25);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
 await call("get_balances", { address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73" });
 await call("token_info", { token: HOLBRIC });
 await call("token_info", { token: "0x322F0929c4625eD5bAd873c95208D54E1c003b2d" });
-await call("quote_swap", { tokenIn: "USDG", tokenOut: "WETH", amount: "5" });
+const direct = JSON.parse(await call("quote_swap", { tokenIn: "USDG", tokenOut: "WETH", amount: "5" }));
+check(`USDG -> WETH stays a direct route (${direct.route})`, direct.hops === 1 && direct.compared.routesQuoted > 1);
+// Multi-hop: official Robinhood Stock Tokens with no live direct Uniswap v3 pool against the input token.
+// The factory check below proves there is no direct route, so the router has to find a 2-hop one.
+const { livePools } = await import("../src/route.js");
+const AMZN = "0x12f190a9F9d7D37a250758b26824B97CE941bF54", BMNR = "0x9a7842EDed60b0FE1e03eEc342C82A397c821eD0";
+const WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+check("factory: no live WETH/AMZN pool at any fee tier", (await livePools(WETH, AMZN)).length === 0);
+check("factory: no live USDG/BMNR pool at any fee tier", (await livePools(USDG, BMNR)).length === 0);
+const amzn = JSON.parse(await call("quote_swap", { tokenIn: "ETH", tokenOut: AMZN, amount: "0.01" }));
+check(`ETH -> AMZN routes in 2 hops (${amzn.route})`, amzn.hops === 2 && amzn.routeTokens[2] === "AMZN" && BigInt(amzn.tokenOut.amountOutRaw) > 0n);
+const bmnr = JSON.parse(await call("find_route", { tokenIn: "USDG", tokenOut: BMNR, amount: "5" }));
+check(`USDG -> BMNR best route is 2 hops through WETH (${bmnr.best.route})`, bmnr.best.hops === 2 && bmnr.best.tokens[1] === WETH);
+check("find_route lists the alternatives it compared, all worse or equal", bmnr.alternatives.every((a) => BigInt(a.amountOutRaw) <= BigInt(bmnr.best.amountOutRaw)));
+const sell = JSON.parse(await call("find_route", { tokenIn: AMZN, tokenOut: "ETH", amount: "0.05" }));
+check(`AMZN -> ETH routes in 2 hops (${sell.best.route})`, sell.best.hops === 2);
 await call("stock_tokens", { search: "TSLA", limit: 3 });
 await call("stock_quote", { stock: "NVDA", side: "sell", amount: "1" });
 await call("pons_token", { token: HOLBRIC });
@@ -54,6 +69,7 @@ check("pons_creator_fees has escrow and unswept apart", fees.escrow?.claimable &
 // prepare tools with an empty wallet must refuse; execute must refuse unknown ids
 const EMPTY = /not enough|Not enough|no ETH|Only the creator|nothing to sweep|Fund it/;
 await call("prepare_swap", { tokenIn: "USDG", tokenOut: "WETH", amount: "5" }, EMPTY);
+await call("prepare_swap", { tokenIn: "ETH", tokenOut: AMZN, amount: "0.01" }, EMPTY);
 await call("prepare_send", { to: "0x000000000000000000000000000000000000dEaD", token: "ETH", amount: "0.001" }, EMPTY);
 await call("prepare_wrap_eth", { amount: "0.001" }, EMPTY);
 await call("prepare_unwrap_weth", { amount: "0.001" }, EMPTY);

@@ -2,24 +2,23 @@ import { parseUnits, formatUnits, erc20Abi, encodeFunctionData, getAddress, isAd
 import { ADDR, publicClient, resolveToken, poolAddress, CHAIN_ID, fmt, localTime } from "./chain.js";
 import { walletAddress } from "./keystore.js";
 import { requireWallet, slippage, checkLimit, approveTx, store } from "./actions.js";
+import { findRoutes, describe, routeView, FEE_TIERS } from "./route.js";
 
-export const FEE_TIERS = [100, 500, 3000, 10000];
+export { FEE_TIERS } from "./route.js";
 const ADDRESS_THIS = "0x0000000000000000000000000000000000000002"; // SwapRouter02 constant
 
-const quoterAbi = [{
-  type: "function", name: "quoteExactInputSingle", stateMutability: "nonpayable",
-  inputs: [{ name: "params", type: "tuple", components: [
-    { name: "tokenIn", type: "address" }, { name: "tokenOut", type: "address" }, { name: "amountIn", type: "uint256" },
-    { name: "fee", type: "uint24" }, { name: "sqrtPriceLimitX96", type: "uint160" }] }],
-  outputs: [{ name: "amountOut", type: "uint256" }, { name: "sqrtPriceX96After", type: "uint160" },
-    { name: "initializedTicksCrossed", type: "uint32" }, { name: "gasEstimate", type: "uint256" }],
-}];
 const routerAbi = [
   { type: "function", name: "exactInputSingle", stateMutability: "payable",
     inputs: [{ name: "params", type: "tuple", components: [
       { name: "tokenIn", type: "address" }, { name: "tokenOut", type: "address" }, { name: "fee", type: "uint24" },
       { name: "recipient", type: "address" }, { name: "amountIn", type: "uint256" }, { name: "amountOutMinimum", type: "uint256" },
       { name: "sqrtPriceLimitX96", type: "uint160" }] }],
+    outputs: [{ name: "amountOut", type: "uint256" }] },
+  // SwapRouter02 (IV3SwapRouter) exactInput: no deadline in the struct; the deadline is on multicall.
+  { type: "function", name: "exactInput", stateMutability: "payable",
+    inputs: [{ name: "params", type: "tuple", components: [
+      { name: "path", type: "bytes" }, { name: "recipient", type: "address" }, { name: "amountIn", type: "uint256" },
+      { name: "amountOutMinimum", type: "uint256" }] }],
     outputs: [{ name: "amountOut", type: "uint256" }] },
   { type: "function", name: "unwrapWETH9", stateMutability: "payable",
     inputs: [{ name: "amountMinimum", type: "uint256" }, { name: "recipient", type: "address" }], outputs: [] },
@@ -28,40 +27,50 @@ const routerAbi = [
   { type: "function", name: "WETH9", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ];
 
-
-async function quoteTier(tIn, tOut, amountIn, fee) {
-  const { result } = await publicClient().simulateContract({
-    address: ADDR.QUOTER_V2, abi: quoterAbi, functionName: "quoteExactInputSingle",
-    args: [{ tokenIn: poolAddress(tIn), tokenOut: poolAddress(tOut), amountIn, fee, sqrtPriceLimitX96: 0n }],
-  });
-  return { fee, amountOut: result[0], gasEstimate: result[3], ticksCrossed: Number(result[2]) };
-}
-
+/**
+ * Exact-input quote over every route Holbric can find: direct pools at all four fee tiers, plus 2-hop routes through
+ * WETH, USDG and cbBTC. Pools come from the Uniswap v3 factory; each path is quoted with QuoterV2.quoteExactInput.
+ */
 export async function quote({ tokenIn, tokenOut, amount }) {
   const [tIn, tOut] = await Promise.all([resolveToken(tokenIn), resolveToken(tokenOut)]);
   if (poolAddress(tIn) === poolAddress(tOut)) throw new Error("tokenIn and tokenOut are the same asset (ETH and WETH share one pool side). Use a wrap, not a swap.");
   if (!/^\d+(\.\d+)?$/.test(String(amount))) throw new Error("amount must be a positive decimal string, e.g. \"5\" or \"0.25\".");
   const amountIn = parseUnits(String(amount), tIn.decimals);
   if (amountIn <= 0n) throw new Error("amount must be greater than zero.");
-  const tries = await Promise.allSettled(FEE_TIERS.map((f) => quoteTier(tIn, tOut, amountIn, f)));
-  const ok = tries.filter((t) => t.status === "fulfilled" && t.value.amountOut > 0n).map((t) => t.value);
-  if (!ok.length) throw new Error(`No Uniswap v3 pool on Robinhood Chain quoted ${tIn.symbol} -> ${tOut.symbol} at any fee tier (${FEE_TIERS.join(", ")}).`);
-  ok.sort((a, b) => (b.amountOut > a.amountOut ? 1 : b.amountOut < a.amountOut ? -1 : 0));
-  const best = ok[0];
+  const found = await findRoutes({ tIn, tOut, addrIn: poolAddress(tIn), addrOut: poolAddress(tOut), amountIn });
+  if (!found.best) throw new Error(`No Uniswap v3 route on Robinhood Chain quoted ${tIn.symbol} -> ${tOut.symbol}: no live pool directly at any fee tier (${FEE_TIERS.join(", ")}) and none through ${found.intermediatesTried.join(", ")}.`);
+  const best = found.best;
   const block = await publicClient().getBlockNumber();
   const priceOutPerIn = Number(formatUnits(best.amountOut, tOut.decimals)) / Number(amount);
   return {
-    tIn, tOut, amountIn, best, all: ok, block,
+    tIn, tOut, amountIn, best, all: found.routes, found, block,
     view: {
       chainId: CHAIN_ID, block: block.toString(), quotedAt: new Date().toISOString(), quotedAtLocal: localTime(new Date()),
-      venue: "Uniswap v3 QuoterV2 " + ADDR.QUOTER_V2,
+      venue: `Uniswap v3 QuoterV2 ${ADDR.QUOTER_V2} (quoteExactInput), pools from factory ${ADDR.UNISWAP_V3_FACTORY}`,
       tokenIn: { symbol: tIn.symbol, address: tIn.address ?? "native", amount: fmt(amountIn, tIn.decimals, 18) },
       tokenOut: { symbol: tOut.symbol, address: tOut.address ?? "native", amountOut: fmt(best.amountOut, tOut.decimals, 18), amountOutRaw: best.amountOut.toString() },
-      feeTier: `${best.fee / 10000}%`, price: `1 ${tIn.symbol} = ${priceOutPerIn.toPrecision(8)} ${tOut.symbol}`,
+      route: describe(best), hops: best.hops, routeTokens: best.symbols, feeTier: best.fees.map((f) => `${f / 10000}%`).join(" + "), pools: best.pools,
+      price: `1 ${tIn.symbol} = ${priceOutPerIn.toPrecision(8)} ${tOut.symbol}`,
       gasEstimate: best.gasEstimate.toString(),
-      otherTiers: ok.slice(1).map((q) => ({ feeTier: `${q.fee / 10000}%`, amountOut: fmt(q.amountOut, tOut.decimals, 18) })),
+      compared: { routesQuoted: found.routes.length, livePoolsRead: found.poolsRead, via: found.intermediatesTried, noQuote: found.failed.length },
+      alternatives: found.routes.slice(1, 8).map((r) => ({ route: describe(r), amountOut: fmt(r.amountOut, tOut.decimals, 18), vsBestPct: routeView(r, tOut, best).vsBestPct })),
       ...(tIn.unverified || tOut.unverified ? { warning: "One token is not in Holbric's verified list (ETH, USDG, WETH). Check the contract on the explorer." } : {}),
     },
+  };
+}
+
+/** find_route: every route that was compared, with pools, gas and the gap to the best one. */
+export async function findRoute(args) {
+  const q = await quote(args);
+  const { tOut, best, found } = q;
+  return {
+    chainId: CHAIN_ID, block: q.view.block, quotedAtLocal: q.view.quotedAtLocal, venue: q.view.venue,
+    tokenIn: q.view.tokenIn, tokenOut: { symbol: tOut.symbol, address: tOut.address ?? "native" },
+    best: routeView(best, tOut, null),
+    alternatives: found.routes.slice(1).map((r) => routeView(r, tOut, best)),
+    notQuoted: found.failed,
+    method: `Direct pools at ${FEE_TIERS.map((f) => f / 10000 + "%").join(", ")} plus 2-hop routes through ${found.intermediatesTried.join(", ")}, read from the Uniswap v3 factory (pools with zero in-range liquidity are skipped, up to 3 pools per leg). Each path quoted with QuoterV2.quoteExactInput; the highest output wins. prepare_swap uses the same choice.`,
+    ...(q.view.warning ? { warning: q.view.warning } : {}),
   };
 }
 
@@ -94,13 +103,20 @@ export async function prepareSwap({ tokenIn, tokenOut, amount, slippageBps }) {
   }
   const unwrap = tOut.native;
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 15 * 60);
-  const calls = [encodeFunctionData({ abi: routerAbi, functionName: "exactInputSingle", args: [{
-    tokenIn: poolAddress(tIn), tokenOut: poolAddress(tOut), fee: best.fee, recipient: unwrap ? ADDRESS_THIS : from,
-    amountIn, amountOutMinimum: minOut, sqrtPriceLimitX96: 0n }] })];
+  const recipient = unwrap ? ADDRESS_THIS : from;
+  const swapCall = best.hops === 1
+    ? encodeFunctionData({ abi: routerAbi, functionName: "exactInputSingle", args: [{
+      tokenIn: poolAddress(tIn), tokenOut: poolAddress(tOut), fee: best.fees[0], recipient, amountIn, amountOutMinimum: minOut, sqrtPriceLimitX96: 0n }] })
+    : encodeFunctionData({ abi: routerAbi, functionName: "exactInput", args: [{ path: best.path, recipient, amountIn, amountOutMinimum: minOut }] });
+  const calls = [swapCall];
   if (unwrap) calls.push(encodeFunctionData({ abi: routerAbi, functionName: "unwrapWETH9", args: [minOut, from] }));
-  txs.push({ label: `swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} -> ${tOut.symbol} on Uniswap v3`, to: ADDR.SWAP_ROUTER_02,
+  const routeText = describe(best);
+  txs.push({ label: `swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} -> ${tOut.symbol} on Uniswap v3 (${best.hops === 1 ? "exactInputSingle" : "exactInput, " + best.hops + " hops"})`, to: ADDR.SWAP_ROUTER_02,
     data: encodeFunctionData({ abi: routerAbi, functionName: "multicall", args: [deadline, calls] }), value: tIn.native ? amountIn : 0n });
-  lines.push(`Swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} for at least ${fmt(minOut, tOut.decimals)} ${tOut.symbol} (expected ${fmt(best.amountOut, tOut.decimals)}) on Uniswap v3, fee tier ${best.fee / 10000}%. Slippage limit ${(slip / 100).toFixed(2)}%, deadline 15 minutes from now.`);
+  lines.push(`Swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} for at least ${fmt(minOut, tOut.decimals)} ${tOut.symbol} (expected ${fmt(best.amountOut, tOut.decimals)}) on Uniswap v3. Slippage limit ${(slip / 100).toFixed(2)}%, deadline 15 minutes from now.`);
+  lines.push(`Route: ${routeText}${tIn.native ? " (ETH goes in as WETH)" : ""}${unwrap ? " (WETH is unwrapped to ETH at the end)" : ""}. Pools: ${best.pools.join(", ")}.`);
+  const alts = q.all.slice(1, 6).map((r) => `${describe(r)} = ${fmt(r.amountOut, tOut.decimals)} ${tOut.symbol}`);
+  lines.push(`Compared ${q.all.length} route${q.all.length > 1 ? "s" : ""} at block ${q.block}${alts.length ? `; next best: ${alts.join("; ")}` : "; no other route had a live pool"}.`);
   const onReceipt = async (r) => {
     if (unwrap) return {};
     for (const log of r.logs) {

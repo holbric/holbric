@@ -2,19 +2,19 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.3.0 covers 6 projects with 24 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.4.0 covers 6 projects with 25 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
 | Wallet (Robinhood Chain) | Show its address and balances, look up any token, send ETH or ERC-20s, wrap and unwrap WETH | `wallet_address`, `chain_status`, `get_balances`, `token_info`, `prepare_send`, `prepare_wrap_eth`, `prepare_unwrap_weth`, `execute_prepared` |
-| Uniswap v3 | Quote and swap across the 0.01 / 0.05 / 0.3 / 1% pools | `quote_swap`, `prepare_swap` |
+| Uniswap v3 | Find the best route (direct pools at 0.01 / 0.05 / 0.3 / 1%, or 2 hops through WETH, USDG or cbBTC), quote it, and swap | `quote_swap`, `find_route`, `prepare_swap` |
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 8, Uniswap v3 2, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 8, Uniswap v3 3, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -48,7 +48,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.3.0/holbric-0.3.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.4.0/holbric-0.4.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -88,7 +88,9 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | --- | --- |
 | RPC | `https://rpc.mainnet.chain.robinhood.com` (public and rate limited; set `rpc` in `~/.holbric/config.json` or `HOLBRIC_RPC` to use another) |
 | USDG / WETH | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` / `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
+| Uniswap v3 factory | `0x1f7d7550B1b028f7571E69A784071F0205FD2EfA` (`factory()` on QuoterV2 and SwapRouter02 returns this address) |
 | Uniswap v3 QuoterV2 / SwapRouter02 | `0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7` / `0xCaf681a66D020601342297493863E78C959E5cb2` |
+| cbBTC (route middle hop) | `0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4` (exact match on Sourcify, `name()` Coinbase Wrapped BTC) |
 | Pons V2 launch factory | `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e` (exact match on Sourcify: PonsV2LaunchFactory) |
 | Pons V2 fee escrow | `0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e` (exact match on Sourcify: PonsV2FeeEscrow) |
 | Pons V2 meme hook | `0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044` (exact match on Sourcify: PonsV2MemeHook) |
@@ -96,6 +98,17 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | Stock token list | `https://api.robinhood.com/rhj/assets` (the source of the table on docs.robinhood.com/chain/contracts) |
 | Market data | `https://api.geckoterminal.com/api/v2/networks/robinhood` |
 | Verification | `https://sourcify.dev/server/v2/contract/4663/<address>` |
+
+### Uniswap v3 routing
+
+`quote_swap`, `find_route` and `prepare_swap` share one router:
+
+1. Pools are read from the Uniswap v3 factory with `getPool` for the direct pair at every fee tier (0.01%, 0.05%, 0.3%, 1%) and for each leg through WETH, USDG and cbBTC. Pools with zero in-range liquidity are skipped, and at most 3 pools per leg are tried.
+2. Every candidate path is quoted with `QuoterV2.quoteExactInput` on the encoded path (token, fee, token, fee, token). The highest output wins; on a tie the shorter route wins.
+3. `prepare_swap` sends a direct route through SwapRouter02 `exactInputSingle` and a 2-hop route through `exactInput`, inside `multicall` with a 15-minute deadline. The minimum output comes from the slippage limit (default 0.5%), approvals are for the exact input amount, and native ETH is wrapped in and unwrapped out by the router.
+4. The summary shows the route (tokens and fee tiers), the pool addresses, and the next best routes it was compared with. The usual simulation and the re-check inside `execute_prepared` apply.
+
+Robinhood Stock Tokens are never used as a middle hop. A stock token with no direct pool against your input can still be reached: for example ETH to AMZN goes ETH → USDG → AMZN, because the factory has no live WETH/AMZN pool.
 
 Pons quotes come from an `eth_call` simulation of the curve's own `buy` / `sell` functions, with temporary balance overrides. Nothing is signed during a quote. Tokens that have graduated from their curve are not traded yet.
 
@@ -109,8 +122,8 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 
 ```sh
 npm test                           # both suites below. Never signs.
-node test/live.mjs                 # live, over MCP stdio: read tools, the HOLBRIC creator-fee readout, prepare refusals
-node test/simulate-writes.mjs      # builds every prepare_* action with a throwaway wallet, simulates it on mainnet,
+node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop routes, the HOLBRIC creator-fee readout, prepare refusals
+node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop swaps included) with a throwaway wallet, simulates it on mainnet,
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
 

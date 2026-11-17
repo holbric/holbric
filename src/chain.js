@@ -12,6 +12,8 @@ export const ADDR = {
   WETH: getAddress("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"),
   QUOTER_V2: getAddress("0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7"),
   SWAP_ROUTER_02: getAddress("0xcaf681a66d020601342297493863e78c959e5cb2"),
+  // Uniswap v3 factory (docs). QuoterV2.factory() and SwapRouter02.factory() both return this address on chain.
+  UNISWAP_V3_FACTORY: getAddress("0x1f7d7550b1b028f7571e69a784071f0205fd2efa"),
   // Pons V2 launch factory, exact match on Sourcify as PonsV2LaunchFactory.
   PONS_FACTORY: getAddress("0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e"),
   // Pons V2 fee escrow (Sourcify exact match: PonsV2FeeEscrow) and meme hook (PonsV2MemeHook). docs.ponsfamily.com/v2#contracts

@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { walletAddress } from "./keystore.js";
-import { balances, quote, prepareSwap } from "./swap.js";
+import { balances, quote, prepareSwap, findRoute } from "./swap.js";
 import { prepareSend } from "./send.js";
 import { tokenInfo } from "./tokeninfo.js";
 import { stockTokens, stockQuote } from "./stocks.js";
@@ -45,13 +45,15 @@ export const TOOLS = [
     { amount: amountArg }, PREP, (a) => prepareWrap(a)],
   ["prepare_unwrap_weth", "Wallet", "Prepare unwrap", "Prepare unwrapping WETH back into ETH (withdraw on the WETH contract), simulated before you sign. Nothing is signed.",
     { amount: amountArg }, PREP, (a) => prepareUnwrap(a)],
-  ["quote_swap", "Uniswap v3", "Quote swap", "Exact-input quote from Uniswap v3 QuoterV2, comparing the 0.01%, 0.05%, 0.3% and 1% pools.",
+  ["quote_swap", "Uniswap v3", "Quote swap", "Exact-input quote from Uniswap v3 QuoterV2 over the best route: direct pools at 0.01%, 0.05%, 0.3% and 1%, plus 2-hop routes through WETH, USDG and cbBTC. Shows the route (tokens and fees) and the alternatives it beat.",
     { tokenIn: tokenArg, tokenOut: tokenArg, amount: amountArg }, RO, async (a) => (await quote(a)).view],
-  ["prepare_swap", "Uniswap v3", "Prepare swap", "Prepare a Uniswap v3 swap: checks balance, allowance and the daily limit, sets an exact-amount approval if needed, and simulates every step on mainnet. Nothing is signed.",
+  ["find_route", "Uniswap v3", "Find route", "Every Uniswap v3 route Holbric compared for a swap: pools read from the factory, each path quoted with QuoterV2.quoteExactInput, with pool addresses, gas estimates and the gap to the best route.",
+    { tokenIn: tokenArg, tokenOut: tokenArg, amount: amountArg }, RO, (a) => findRoute(a)],
+  ["prepare_swap", "Uniswap v3", "Prepare swap", "Prepare a Uniswap v3 swap on the best route (direct, or 2 hops through SwapRouter02 exactInput): checks balance, allowance and the daily limit, sets an exact-amount approval if needed, and simulates every step on mainnet. Nothing is signed.",
     { tokenIn: tokenArg, tokenOut: tokenArg, amount: amountArg, slippageBps: slipArg }, PREP, (a) => prepareSwap(a)],
   ["stock_tokens", "Robinhood Stock Tokens", "Stock tokens", "Official Robinhood Stock Token and tokenized ETF contracts on Robinhood Chain, from the list Robinhood publishes. Search by ticker or name.",
     { search: z.string().optional(), limit: z.number().int().min(1).max(250).optional() }, RO, (a) => stockTokens(a)],
-  ["stock_quote", "Robinhood Stock Tokens", "Stock token quote", "Uniswap v3 pool quote for a Robinhood Stock Token against USDG, with price impact compared to a small trade.",
+  ["stock_quote", "Robinhood Stock Tokens", "Stock token quote", "Uniswap v3 quote for a Robinhood Stock Token against USDG on the best route (direct pool or 2 hops), with price impact compared to a small trade.",
     { stock: z.string().describe("Ticker like TSLA or the contract address"), side: z.enum(["buy", "sell"]).optional().describe("buy: amount is USDG; sell: amount is stock tokens"), amount: amountArg }, RO, (a) => stockQuote(a)],
   ["pons_token", "Pons", "Pons token", "State of a token launched on Pons V2: curve reserves, price, progress to graduation, fees.", { token: z.string() }, RO, (a) => ponsToken(a)],
   ["pons_recent_launches", "Pons", "Recent Pons launches", "Tokens launched through the Pons V2 factory in the last N hours (max 72), newest first.",

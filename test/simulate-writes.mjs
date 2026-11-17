@@ -24,6 +24,8 @@ const { _setSimOverrides, simulateTxs, simulateMethod } = await import("../src/s
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 const HOLBRIC_CURVE = "0x4eF8D0d0210BbF85C3e4C93921C9F87d075618B6";
 const CREATOR = "0x06287131cabd16ae540959bfd70c415bb04239ff";
+const AMZN = "0x12f190a9F9d7D37a250758b26824B97CE941bF54"; // official Robinhood Stock Token, no WETH pool on Uniswap v3
+const BMNR = "0x9a7842EDed60b0FE1e03eEc342C82A397c821eD0"; // official Robinhood Stock Token, no USDG pool on Uniswap v3
 const DUMMY_SPENDER = "0x000000000000000000000000000000000000bEEF";
 
 const c = publicClient();
@@ -32,8 +34,8 @@ const realGetBalance = c.getBalance.bind(c), realRead = c.readContract.bind(c);
 c.getBalance = async (a) => (a.address === me ? parseEther("5") : realGetBalance(a));
 c.readContract = async (a) => (a.functionName === "balanceOf" && a.args?.[0] === me && !a.stateOverride && a.address !== ADDR.ERC8004_IDENTITY && a.address !== ADDR.PONS_ESCROW ? BIG : realRead(a));
 // Pretend balances for the throwaway wallet only, inside the simulation. Allowances stay real (zero), so approvals are exercised.
-const pretend = [[ADDR.USDG, 10n ** 12n], [ADDR.WETH, parseEther("1")], [HOLBRIC, 2n * 10n ** 24n]];
-const pretendOverrides = await Promise.all(pretend.map(([t, amt]) => tokenOverride(t, me, DUMMY_SPENDER, amt)));
+const pretend = [[ADDR.USDG, 10n ** 12n], [ADDR.WETH, parseEther("1")], [HOLBRIC, 2n * 10n ** 24n], [AMZN, parseEther("1")]];
+const pretendOverrides = (await Promise.all(pretend.map(([t, amt]) => tokenOverride(t, me, DUMMY_SPENDER, amt)))).filter(Boolean);
 _setSimOverrides(async (from) => (from === me ? [{ address: me, balance: parseEther("5") }, ...pretendOverrides] : undefined));
 
 let pass = 0, fail = 0;
@@ -61,6 +63,18 @@ console.log(`Throwaway wallet ${me}. Run at ${new Date().toLocaleString("en-GB",
 const swap = await run("swap 5 USDG -> WETH", () => prepareSwap({ tokenIn: "USDG", tokenOut: "WETH", amount: "5" }));
 await run("swap 0.001 ETH -> USDG", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.001" }));
 await run("swap 2 USDG -> ETH (unwrap)", () => prepareSwap({ tokenIn: "USDG", tokenOut: "ETH", amount: "2" }));
+// Multi-hop (SwapRouter02 exactInput) on routes that have no direct pool.
+const multiCheck = (label, r, via) => r && ok(`${label} uses a 2-hop exactInput route through ${via}`,
+  r.simulation.steps.some((s) => /exactInput, 2 hops/.test(s.step)) && r.quote.hops === 2 && r.quote.routeTokens[1] === via && /Compared \d+ routes? at block/.test(r.summary), r.quote.route);
+const mh1 = await run("swap 0.01 ETH -> AMZN (multi-hop)", () => prepareSwap({ tokenIn: "ETH", tokenOut: AMZN, amount: "0.01" }));
+multiCheck("ETH -> AMZN", mh1, "USDG");
+const mh2 = await run("swap 5 USDG -> BMNR (multi-hop, exact approval)", () => prepareSwap({ tokenIn: "USDG", tokenOut: BMNR, amount: "5" }));
+multiCheck("USDG -> BMNR", mh2, "WETH");
+if (mh2) ok("USDG -> BMNR approves exactly 5 USDG", /Approve exactly 5 USDG/.test(mh2.summary) && !/unlimited/i.test(mh2.summary.replace("Not unlimited", "")));
+const mh3 = await run("swap 0.05 AMZN -> ETH (multi-hop, unwrap)", () => prepareSwap({ tokenIn: AMZN, tokenOut: "ETH", amount: "0.05" }));
+multiCheck("AMZN -> ETH", mh3, "USDG");
+if (mh3) ok("AMZN -> ETH delivers native ETH to the wallet", mh3.simulation.walletDeltas.some((d) => d.symbol === "ETH" && !d.change.startsWith("-")),
+  mh3.simulation.walletDeltas.map((d) => `${d.change} ${d.symbol}`).join(", "));
 await run("send 0.001 ETH", () => prepareSend({ to: "0x000000000000000000000000000000000000dEaD", token: "ETH", amount: "0.001" }));
 await run("send 1 USDG", () => prepareSend({ to: "0x000000000000000000000000000000000000dEaD", token: "USDG", amount: "1" }));
 await run("pons buy 0.001 ETH of HOLBRIC", () => preparePonsTrade({ token: HOLBRIC, side: "buy", amount: "0.001" }));
@@ -78,6 +92,12 @@ if (swap) {
   for (const [k, v] of p.sim._raw.inflows) p.sim._raw.inflows.set(k, v * 2n); // pretend the preview promised twice as much
   try { await execute({ prepareId: swap.prepareId, confirm: true }); ok("execute refuses a worse result", false, "it did not refuse"); }
   catch (e) { ok("execute refuses a worse result before signing", /^Refused before signing/.test(e.message), e.message); }
+}
+if (mh2) {
+  const p = _peek(mh2.prepareId);
+  for (const [k, v] of p.sim._raw.inflows) p.sim._raw.inflows.set(k, v * 2n);
+  try { await execute({ prepareId: mh2.prepareId, confirm: true }); ok("execute refuses a worse multi-hop result", false, "it did not refuse"); }
+  catch (e) { ok("execute refuses a worse multi-hop result before signing", /^Refused before signing/.test(e.message), e.message); }
 }
 const ext = await run("send for the unexpected-transfer check", () => prepareSend({ to: "0x000000000000000000000000000000000000dEaD", token: "USDG", amount: "1" }));
 if (ext) {

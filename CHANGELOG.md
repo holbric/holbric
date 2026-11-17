@@ -2,6 +2,20 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.4.0 — 18 November 2026
+
+25 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v3 swaps now find their own route, including 2-hop routes.
+
+- **Multi-hop routing.** `quote_swap` and `prepare_swap` read pools from the Uniswap v3 factory `0x1f7d7550B1b028f7571E69A784071F0205FD2EfA`: the direct pair at all four fee tiers, plus 2-hop routes through WETH, USDG and cbBTC. Each path is quoted with QuoterV2 `quoteExactInput` and the best output wins. Tokens with no direct pool against your input, such as several Robinhood Stock Tokens, can now be quoted and swapped (ETH → USDG → AMZN, USDG → WETH → BMNR).
+- **New `find_route`.** Lists every route that was compared, with pool addresses, gas estimates and how far each is from the best.
+- **Swaps.** 2-hop routes go through SwapRouter02 `exactInput` inside `multicall`, with the same exact-amount approvals, slippage-based minimum output, pre-sign simulation and `execute_prepared` re-check as direct swaps. The summary now shows the route, the pools and the next best routes.
+- **Simulation.** Balance overrides now also find tokens that keep balances in OpenZeppelin's ERC-7201 storage namespace, which the Robinhood Stock Tokens use. This lets the test suite simulate stock token sells.
+- **Tests.** Live tests check the factory has no direct pool for the multi-hop cases, then quote them. The write simulations prepare and re-check ETH → AMZN, USDG → BMNR (with an exact approval) and AMZN → ETH (with the WETH unwrap). Nothing is signed.
+
+Tool count per project: Wallet 8, Uniswap v3 3, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2.
+
+Install from the [v0.4.0 release](https://github.com/holbric/holbric/releases/tag/v0.4.0). The package is not on the npm registry yet.
+
 ## 0.3.0 — 18 November 2026
 
 24 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Five new tools, and every write is now simulated before you sign it.
