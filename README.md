@@ -16,7 +16,7 @@ Version 0.2.0 covers 6 projects with 19 tools. Every integration below was teste
 
 Signing for any write goes through `execute_prepared`.
 
-Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/GITHUB_USER/holbric](https://github.com/GITHUB_USER/holbric)
+Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
 ## $HOLBRIC
 
@@ -50,7 +50,7 @@ Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so
 ```sh
 npm install -g https://holbric.com/dl/holbric-0.2.0.tgz
 # or
-git clone https://github.com/GITHUB_USER/holbric.git
+git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
 holbric --version
 holbric tools          # every tool, grouped by project
