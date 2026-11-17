@@ -1,0 +1,11 @@
+node_modules/
+*.tgz
+.env
+.env.*
+*.log
+npm-debug.log*
+.DS_Store
+.holbric/
+keystore.json
+.cursor/
+.vscode/
