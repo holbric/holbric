@@ -19,12 +19,17 @@ console.log(`TOOLS (${tools.tools.length}):`, tools.tools.map((t) => t.name).joi
 console.log("Run at", new Date().toLocaleString("en-GB", { hour12: false, timeZoneName: "short" }));
 
 const MAX = Number(process.env.MAX || 1800);
-const call = async (name, args = {}) => {
+let pass = 0, fail = 0;
+const check = (label, cond) => { cond ? pass++ : fail++; console.log(`${cond ? "PASS" : "FAIL"} ${label}`); };
+// expect: "ok" (must succeed), or a RegExp the error text must match (prepare tools with an empty wallet must refuse).
+const call = async (name, args = {}, expect = "ok") => {
   const r = await client.callTool({ name, arguments: args });
   const text = r.content.map((c) => c.text).join("\n");
   console.log(`\n=== ${name} ${JSON.stringify(args)} ${r.isError ? "(error)" : ""}\n${text.length > MAX ? text.slice(0, MAX) + "\n...[truncated]" : text}`);
+  check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
+check(`tool count is 24 (got ${tools.tools.length})`, tools.tools.length === 24);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -43,10 +48,20 @@ await call("agent_identity", { agentId: 1 });
 await call("agent_reputation", { agentId: 1 });
 await call("market_token", { token: HOLBRIC });
 await call("market_trending", { limit: 3 });
+// Real HOLBRIC creator fee position (read-only): escrow and unswept curve fees, kept separate.
+const fees = JSON.parse(await call("pons_creator_fees", { curve: "0x4eF8D0d0210BbF85C3e4C93921C9F87d075618B6", recipient: "0x06287131cabd16ae540959bfd70c415bb04239ff" }, "ok"));
+check("pons_creator_fees has escrow and unswept apart", fees.escrow?.claimable && fees.unswept?.tradingFeePending && fees.caveat);
 // prepare tools with an empty wallet must refuse; execute must refuse unknown ids
-await call("prepare_swap", { tokenIn: "USDG", tokenOut: "WETH", amount: "5" });
-await call("prepare_send", { to: "0x000000000000000000000000000000000000dEaD", token: "ETH", amount: "0.001" });
-await call("prepare_pons_trade", { token: HOLBRIC, side: "buy", amount: "0.001" });
-await call("prepare_register_agent", { agentURI: "https://holbric.com/agent.json" });
-await call("execute_prepared", { prepareId: "hp_doesnotexist", confirm: true });
+const EMPTY = /not enough|Not enough|no ETH|Only the creator|nothing to sweep|Fund it/;
+await call("prepare_swap", { tokenIn: "USDG", tokenOut: "WETH", amount: "5" }, EMPTY);
+await call("prepare_send", { to: "0x000000000000000000000000000000000000dEaD", token: "ETH", amount: "0.001" }, EMPTY);
+await call("prepare_wrap_eth", { amount: "0.001" }, EMPTY);
+await call("prepare_unwrap_weth", { amount: "0.001" }, EMPTY);
+await call("prepare_pons_trade", { token: HOLBRIC, side: "buy", amount: "0.001" }, EMPTY);
+await call("prepare_pons_claim", { asset: "ETH" }, EMPTY);
+await call("prepare_pons_sweep", { token: HOLBRIC }, EMPTY);
+await call("prepare_register_agent", { agentURI: "https://holbric.com/agent.json" }, EMPTY);
+await call("execute_prepared", { prepareId: "hp_doesnotexist", confirm: true }, /Unknown or expired prepareId/);
 await client.close();
+console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);
+process.exit(fail ? 1 : 0);

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { publicClient, robinhoodChain, transport, txLink, CHAIN_ID, localTime, fmt, ADDR } from "./chain.js";
 import { loadConfig, spentToday, recordSpend } from "./config.js";
 import { walletAddress, loadAccount } from "./keystore.js";
+import { simulateTxs, simulationLines, simView, compareSims } from "./simulate.js";
 
 const TTL_MS = 5 * 60 * 1000;
 const pending = new Map();
@@ -36,24 +37,38 @@ export function approveTx(token, spender, amount, symbol, decimals) {
 }
 
 /** Store an action. txs: [{label,to,data,value}]; lines: plain-language steps. */
-export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt }) {
+export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt, slippageBps, valueLine }) {
   sweep();
   const c = publicClient();
   const ethBal = await c.getBalance({ address: from });
   const valueOut = txs.reduce((a, t) => a + (t.value ?? 0n), 0n);
   if (ethBal === 0n || ethBal <= valueOut) throw new Error(`Wallet ${from} has ${fmt(ethBal, 18)} ETH, which is not enough for the network fee${valueOut ? " on top of the ETH being sent" : ""}. Fund it with ETH on Robinhood Chain first. Nothing was prepared.`);
+  const sim = await simulateTxs(from, txs);
+  if (!sim.ok) {
+    const bad = sim.steps.find((s) => s.status === "failure");
+    throw new Error(`Pre-sign simulation on mainnet failed at "${bad.step}": ${bad.error}. Nothing was prepared.`);
+  }
+  const slip = slippageBps ?? slippage();
   const limit = loadConfig().dailyLimitUsd;
   const id = "hp_" + randomBytes(6).toString("hex");
   const expiresAt = Date.now() + TTL_MS;
-  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt });
+  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt, sim, slippageBps: slip });
   const summary = [
     `From wallet ${from} on Robinhood Chain mainnet (chain id ${CHAIN_ID}).`,
     ...lines.map((s, i) => `${i + 1}. ${s}`),
+    ...simulationLines(sim),
     `${txs.length} transaction${txs.length > 1 ? "s" : ""} to sign. Network fee is paid in ETH (wallet holds ${fmt(ethBal, 18)} ETH). No Holbric fee.`,
-    usd === 0 ? "No tokens leave the wallet; only the network fee is paid." : usd != null ? `Approximate value: $${usd.toFixed(2)}${limit != null ? ` (daily limit $${limit}, spent today $${spentToday().toFixed(2)})` : ""}.` : "Approximate USD value: not available.",
+    valueLine ? valueLine : usd === 0 ? "No tokens leave the wallet; only the network fee is paid." : usd != null ? `Approximate value: $${usd.toFixed(2)}${limit != null ? ` (daily limit $${limit}, spent today $${spentToday().toFixed(2)})` : ""}.` : "Approximate USD value: not available.",
     `This preview expires at ${localTime(new Date(expiresAt))}. Show it to the user and ask for a clear yes or no before calling execute_prepared.`,
   ].join("\n");
-  return { prepareId: id, kind, expiresAt: new Date(expiresAt).toISOString(), transactions: txs.length, summary, ...extra };
+  return { prepareId: id, kind, expiresAt: new Date(expiresAt).toISOString(), transactions: txs.length, summary, simulation: simView(sim), ...extra };
+}
+
+/** Re-simulate a prepared action and compare with its preview. Returns { ok, reason, simulation }. Never signs. */
+export async function recheck(p) {
+  const sim = await simulateTxs(p.from, p.txs);
+  const reason = compareSims(p.sim, sim, p.slippageBps);
+  return { ok: !reason, reason, simulation: simView(sim) };
 }
 
 export async function execute({ prepareId, confirm }) {
@@ -62,12 +77,15 @@ export async function execute({ prepareId, confirm }) {
   const p = pending.get(prepareId);
   if (!p) throw new Error("Unknown or expired prepareId. Prepare again and show the user the new summary.");
   pending.delete(prepareId);
+  // Re-simulate right before signing. Refuse if anything got worse than the preview the user agreed to.
+  const check = await recheck(p);
+  if (!check.ok) throw new Error(`Refused before signing: ${check.reason}. Nothing was signed or sent. Prepare again and show the user the new summary.`);
   const account = loadAccount();
   if (getAddress(account.address) !== getAddress(p.from)) throw new Error("Keystore address changed since prepare. Prepare again.");
   checkLimit(p.usd);
   const c = publicClient();
   const w = createWalletClient({ account, chain: robinhoodChain, transport: transport() });
-  const out = { prepareId, kind: p.kind, transactions: [] };
+  const out = { prepareId, kind: p.kind, preSignCheck: `re-simulated at block ${check.simulation.block} (${check.simulation.method}); matches the preview within the ${(p.slippageBps / 100).toFixed(2)}% slippage limit`, transactions: [] };
   for (const tx of p.txs) {
     const hash = await w.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ?? 0n });
     const r = await c.waitForTransactionReceipt({ hash, timeout: 120_000 });

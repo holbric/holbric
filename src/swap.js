@@ -110,7 +110,7 @@ export async function prepareSwap({ tokenIn, tokenOut, amount, slippageBps }) {
     }
     return {};
   };
-  return store({ kind: "uniswap_swap", from, txs, lines, usd, onReceipt, extra: { quote: q.view } });
+  return store({ kind: "uniswap_swap", from, txs, lines, usd, onReceipt, slippageBps: slip, extra: { quote: q.view } });
 }
 
 export async function balances({ address, tokens = [] }) {

@@ -1,7 +1,7 @@
 {
   "name": "holbric",
-  "version": "0.2.0",
-  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet, Uniswap v3, Robinhood Stock Tokens, Pons, ERC-8004, GeckoTerminal. Local wallet, yes or no before every signature.",
+  "version": "0.3.0",
+  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet, Uniswap v3, Robinhood Stock Tokens, Pons, ERC-8004, GeckoTerminal. Local wallet, mainnet simulation and a yes or no before every signature.",
   "type": "module",
   "bin": {
     "holbric": "bin/holbric.js"
@@ -11,13 +11,14 @@
     "bin",
     "src",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=22.12.0"
   },
   "scripts": {
-    "test": "node test/live.mjs"
+    "test": "node test/live.mjs && node test/simulate-writes.mjs"
   },
   "keywords": [
     "mcp",
@@ -27,7 +28,8 @@
     "erc-8004",
     "stock-tokens",
     "agent",
-    "wallet"
+    "wallet",
+    "eth-simulate"
   ],
   "license": "MIT",
   "private": false,

@@ -20,7 +20,7 @@ const curveAbi = parseAbi([
 ]);
 const PROBE_FROM = "0x00000000000000000000000000000000000A11CE";
 
-async function launched(token) {
+export async function launched(token) {
   if (!isAddress(token || "")) throw new Error("token must be a 0x contract address.");
   const t = getAddress(token);
   const L = await publicClient().readContract({ address: ADDR.PONS_FACTORY, abi: factoryAbi, functionName: "getLaunchedToken", args: [t] });
@@ -28,7 +28,7 @@ async function launched(token) {
   return { t, L };
 }
 
-async function pairMeta(L) {
+export async function pairMeta(L) {
   if (/^0x0{40}$/i.test(L.pairToken)) return { native: true, symbol: "ETH", decimals: 18, address: null };
   const c = publicClient();
   const [symbol, decimals] = await Promise.all([c.readContract({ address: L.pairToken, abi: erc20Abi, functionName: "symbol" }), c.readContract({ address: L.pairToken, abi: erc20Abi, functionName: "decimals" })]);
@@ -160,5 +160,5 @@ export async function preparePonsTrade({ token, side, amount, slippageBps }) {
     ? `Buy ${q.symbol} on its Pons bonding curve with ${q.amountIn}; receive at least ${fmt(minOut, outDec, 6)} ${q.symbol} (expected ${q.amountOut}).`
     : `Sell ${q.amountIn} on its Pons bonding curve; receive at least ${fmt(minOut, outDec, 8)} ${pair.symbol} (expected ${q.amountOut}).`);
   lines.push(`Slippage limit ${(slip / 100).toFixed(2)}%. The curve charges its own fee and creator tax; they are already inside the expected amount.${q.snipeTaxBpsForWallet ? ` Snipe tax for this wallet right now: ${q.snipeTaxBpsForWallet / 100}%.` : ""}`);
-  return store({ kind: "pons_trade", from, txs, lines, usd, extra: { quote: q } });
+  return store({ kind: "pons_trade", from, txs, lines, usd, slippageBps: slip, extra: { quote: q } });
 }

@@ -14,6 +14,9 @@ export const ADDR = {
   SWAP_ROUTER_02: getAddress("0xcaf681a66d020601342297493863e78c959e5cb2"),
   // Pons V2 launch factory, exact match on Sourcify as PonsV2LaunchFactory.
   PONS_FACTORY: getAddress("0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e"),
+  // Pons V2 fee escrow (Sourcify exact match: PonsV2FeeEscrow) and meme hook (PonsV2MemeHook). docs.ponsfamily.com/v2#contracts
+  PONS_ESCROW: getAddress("0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e"),
+  PONS_HOOK: getAddress("0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044"),
   // ERC-8004 registries (proxies; implementations exact match on Sourcify).
   ERC8004_IDENTITY: getAddress("0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
   ERC8004_REPUTATION: getAddress("0x8004BAa17C55a88189AE136b182e5fdA19dE9b63"),

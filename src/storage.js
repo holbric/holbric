@@ -13,7 +13,7 @@ export async function findSlots(token, holder) {
   if (cache.has(k)) return cache.get(k);
   const c = publicClient();
   let bal = null;
-  for (let s = 0; s < 30 && bal == null; s++) {
+  for (let s = 0; s < 64 && bal == null; s++) {
     const v = await c.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [holder],
       stateOverride: [{ address: token, stateDiff: [{ slot: mapKey(holder, s), value: pad(toHex(PROBE)) }] }] }).catch(() => null);
     if (v === PROBE) bal = s;
@@ -21,7 +21,7 @@ export async function findSlots(token, holder) {
   if (bal == null) { cache.set(k, null); return null; }
   const spender = "0x000000000000000000000000000000000000bEEF";
   let allow = null;
-  for (const s of [bal + 1, ...Array.from({ length: 30 }, (_, i) => i)]) {
+  for (const s of [bal + 1, ...Array.from({ length: 64 }, (_, i) => i)]) {
     const v = await c.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [holder, spender],
       stateOverride: [{ address: token, stateDiff: [{ slot: nestedKey(holder, spender, s), value: pad(toHex(PROBE)) }] }] }).catch(() => null);
     if (v === PROBE) { allow = s; break; }
