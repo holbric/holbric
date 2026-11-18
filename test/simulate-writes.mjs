@@ -457,5 +457,32 @@ ok("simulated creator sweepFees(0) on the curve", fees.sweep.creatorCanSweepNow 
 const notCreator = await simulateTxs(me, [{ label: "sweepFees(0) from a non-creator", to: HOLBRIC_CURVE, value: 0n, data: encodeFunctionData({ abi: curveAbi, functionName: "sweepFees", args: [0n] }) }]);
 ok("sweepFees from a non-creator reverts", notCreator.steps[0].status === "failure", notCreator.steps[0].error);
 
+// ---- spend history (after 0.10.0, unreleased): what execute_prepared would write, from a real prepared action ------------
+{
+  const H = await import("../src/history.js");
+  const { existsSync } = await import("node:fs");
+  const r = await run("send 1 USDG (for the history entry)", () => prepareSend({ to: "0x000000000000000000000000000000000000dEaD", token: "USDG", amount: "1" }));
+  const p = _peek(r.prepareId);
+  let refused = "";
+  try { await execute({ prepareId: r.prepareId, confirm: false }); } catch (e) { refused = e.message; }
+  ok("execute_prepared without confirm writes no history", /confirm: true/.test(refused) && !existsSync(join(process.env.HOLBRIC_HOME, "history.jsonl")));
+  // Real public receipts stand in for the ones execute_prepared would get. Nothing is signed or sent.
+  const rcs = [];
+  for (let b = await c.getBlockNumber(), i = 0; rcs.length < p.txs.length && i < 60; i++, b--) {
+    const blk = await c.getBlock({ blockNumber: b });
+    for (const h of blk.transactions.slice(-2)) { const x = await c.getTransactionReceipt({ hash: h }); if (x.gasUsed > 0n && x.status === "success" && rcs.length < p.txs.length) rcs.push(x); }
+  }
+  const fee = rcs.reduce((a, x) => a + x.gasUsed * x.effectiveGasPrice, 0n);
+  const out = { transactions: p.txs.map((t, i) => ({ step: t.label, hash: rcs[i].transactionHash, status: "success", block: rcs[i].blockNumber.toString() })), result: "Confirmed on Robinhood Chain mainnet." };
+  const e = H.historyEntry(p, out, rcs);
+  ok("history entry: kind, prepareId, wallet and the prepare-time USD estimate come from the prepared action", e.kind === p.kind && e.prepareId === r.prepareId && e.wallet === me && e.usdEstimate === +p.usd.toFixed(2) && e.result === "confirmed" && e.notSent === 0, `${e.kind}, $${e.usdEstimate}`);
+  ok("history entry: network fee is the sum of gasUsed x effectiveGasPrice over the receipts", e.networkFeeWei === fee.toString(), `${e.networkFeeEth} ETH`);
+  const reverted = H.historyEntry(p, { transactions: [{ ...out.transactions[0], status: "reverted" }], result: "Reverted at: x" }, rcs.slice(0, 1));
+  ok("history entry for a revert: result reverted, later steps counted as not sent", reverted.result === "reverted" && reverted.notSent === p.txs.length - 1);
+  ok("appendHistory writes the record", H.appendHistory(e) && H.appendHistory(reverted));
+  const back = H.spendHistory({});
+  ok("spendHistory reads both back with totals", back.totals.actions === 2 && back.totals.confirmed === 1 && back.entries[0].prepareId === r.prepareId, JSON.stringify(back.totals.byKind));
+}
+
 console.log(`\nSimulation method: ${simulateMethod() ? "eth_simulateV1" : "eth_call fallback"}. ${pass} passed, ${fail} failed. Nothing was signed or sent.`);
 process.exit(fail ? 1 : 0);

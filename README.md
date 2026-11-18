@@ -2,7 +2,7 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.10.0 covers 9 projects with 48 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.10.0 covers 9 projects with 48 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it. Not released yet: `spend_history` and `holbric history` (see [Spend history](#spend-history-not-released-yet)) are on this branch after 0.10.0 and make 49 tools.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
@@ -71,6 +71,7 @@ holbric unlock | lock   # store or remove the passphrase file the server signs w
 holbric limit 50        # optional daily USD limit; `holbric limit off` removes it
 holbric aggregators off # use only Holbric's own routing; nothing is sent to KyberSwap (`on` turns it back)
 holbric bridges off     # turn off the Relay bridge tools; nothing is sent to Relay (`on` turns them back)
+holbric history --csv --out=history.csv   # actions this wallet signed through Holbric (not released yet)
 holbric export          # show the key so you can back it up
 ```
 
@@ -224,6 +225,15 @@ There is no PnL. An honest one needs the price of every token at every past tran
 
 `prepare_agent_feedback` calls `giveFeedback` on the reputation registry `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` (a proxy; implementation `0x16e0FA7f7C56B9a767E34B192B51f921BE31dA34`, exact match on Sourcify as ReputationRegistryUpgradeable; its `getIdentityRegistry()` is the identity registry Holbric uses). The value is a decimal such as `5`, `4.5` or `-1` (up to 18 decimals, at most 1e38 in absolute value), with optional tags, an endpoint, an https or ipfs feedbackURI and a 32-byte hash. The registry refuses feedback from an agent's owner or operators; Holbric checks `isAuthorizedOrOwner` first and says so. Feedback is public, permanent and tied to your wallet. `prepare_revoke_feedback` marks one of your entries as revoked: it stays on chain, and summaries stop counting it.
 
+### Spend history (not released yet)
+
+Every action `execute_prepared` signs and sends is added to a local file, `~/.holbric/history.jsonl` (one JSON object per line, readable only by you). It is written once a transaction is sent, also when a step reverts or the run stops part way, so a sent transaction is never missing from it. Each entry has the time and local date, the action kind, the prepareId, the result (`confirmed`, `reverted` or `incomplete`), each step's hash and block, how many steps were not sent, Holbric's USD estimate and the network fee.
+
+- **The USD figure is an estimate.** `usdEstimate` is the value Holbric estimated when the action was prepared (its own Uniswap quote into USDG), the same figure the daily limit uses. It is not a price at the time of the transaction and not a realised value. Actions that could not be valued have none, and the totals count them.
+- **The network fee is read from the receipts.** `gasUsed x effectiveGasPrice` for each transaction. On Robinhood Chain `gasUsed` already includes the parent-chain data cost (`gasUsedForL1`), so this is the whole fee.
+- **What is not in it.** Actions signed before this record existed, and anything signed with the same key outside Holbric. Holbric does not rebuild history from the chain.
+- **Export.** `spend_history` returns the entries with explorer links and totals (actions, confirmed, USD estimate, network fee, count per kind), filtered by `from` / `to` (local calendar days, `YYYY-MM-DD`), `kind` and `limit`, as JSON or CSV. `holbric history [--csv] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD] [--out=FILE]` does the same in your terminal. Neither reads the network or sends anything.
+
 ### Pons creator fees
 
 Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit the fee escrow directly. Fees accrue on the launch's curve before graduation, or on the hook after it, until a sweep moves them, so the escrow balance alone can understate what a creator is owed. `pons_creator_fees` reports the escrow balance (`balanceOf` for ETH, `balanceOfToken` for ERC-20s) and the unswept fees (`quoteFeeBalance` / `creatorTaxBalance` on the curve, or `pendingFees` / `pendingCreatorTax` on the hook) separately, plus the creator's estimated share using the contract's own split.
@@ -237,10 +247,11 @@ npm test                           # both suites below. Never signs.
 node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout,
                                    # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, Morpho markets, positions and vaults,
                                    # the ERC-8004 and Morpho contracts on Sourcify
-                                   # checked against raw reads, portfolio totals, prepare refusals, Relay quotes, order checks, bridge status and the opt-out
+                                   # checked against raw reads, portfolio totals, prepare refusals, Relay quotes, order checks, bridge status and the opt-out,
+                                   # and spend_history over MCP (a real public receipt's fee, CSV, filters, no network call)
 node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps, Relay deposits, Morpho supply and borrow, ERC-8004 feedback) with a throwaway wallet,
                                    # simulates it on mainnet; Morpho repay and withdraw are simulated from real public positions;
-                                   # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
+                                   # re-checks it like execute_prepared, and checks the refusal paths; builds the history entry execute_prepared would write. Never signs.
 ```
 
 ## Changelog

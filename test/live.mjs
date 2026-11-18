@@ -30,7 +30,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 48 (got ${tools.tools.length})`, tools.tools.length === 48);
+check(`tool count is 49 (got ${tools.tools.length})`, tools.tools.length === 49);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -537,6 +537,41 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
   const M = await import("../src/morpho.js");
   const sm = await sourcify(M.MORPHO);
   check(`Morpho Blue ${M.MORPHO}, the only contract the Morpho writes call, is verified on Sourcify as Morpho (${sm.match})`, ["match", "exact_match"].includes(sm.match) && sm.contractName === "Morpho");
+}
+// ---- spend history (after 0.10.0, unreleased): local record, read over MCP ---------------------------------------------
+{
+  const { appendFileSync } = await import("node:fs");
+  const { publicClient: pc } = await import("../src/chain.js");
+  const H = await import("../src/history.js");
+  const empty = JSON.parse(await call("spend_history"));
+  check("spend_history on a new wallet: no actions, and it says what the record does not cover", empty.totals.actions === 0 && empty.entries.length === 0 && empty.notes.some((n) => /Earlier actions/.test(n)));
+  // A real public transaction stands in for one Holbric signed: its receipt gives a real network fee. Nothing is sent.
+  const c = pc(); let rc = null;
+  for (let b = await c.getBlockNumber(), i = 0; !rc && i < 40; i++, b--) {
+    const blk = await c.getBlock({ blockNumber: b });
+    for (const h of blk.transactions.slice(-3)) { const r = await c.getTransactionReceipt({ hash: h }); if (r.gasUsed > 0n && r.status === "success") { rc = r; break; } }
+  }
+  check(`found a recent public transaction with a fee (${rc?.transactionHash})`, !!rc);
+  const fee = rc.gasUsed * rc.effectiveGasPrice;
+  const p = { id: "hp_live", kind: "send", from: rc.from, usd: 1.234, txs: [{ label: "public tx" }] };
+  const out = { transactions: [{ step: "public tx", hash: rc.transactionHash, status: "success", block: rc.blockNumber.toString() }], result: "Confirmed on Robinhood Chain mainnet." };
+  const e = H.historyEntry(p, out, [rc], new Date("2026-11-18T05:00:00Z"));
+  appendFileSync(join(home, "history.jsonl"), JSON.stringify(e) + "\n{not json\n");
+  const h = JSON.parse(await call("spend_history"));
+  check(`spend_history reads it back over MCP: fee ${h.totals.networkFeeEth} ETH = gasUsed x effectiveGasPrice from the receipt`, h.totals.actions === 1 && h.entries[0].networkFeeWei === fee.toString() && h.entries[0].steps[0].explorer.endsWith(rc.transactionHash));
+  check("spend_history labels the USD figure as an estimate and counts the unreadable line", h.totals.usdEstimate === 1.23 && h.notes.some((n) => /not a price at the time/.test(n)) && h.notes.some((n) => /1 line\(s\) .* could not be read/.test(n)));
+  const csv = JSON.parse(await call("spend_history", { format: "csv" })).csv.trim().split("\n");
+  check("spend_history as CSV: header and one row with the hash", csv.length === 2 && csv[0].startsWith("time,date,kind,result,usdEstimate,networkFeeEth,txHashes") && csv[1].includes(rc.transactionHash));
+  const later = JSON.parse(await call("spend_history", { from: "2099-01-01" }));
+  const other = JSON.parse(await call("spend_history", { kind: "swap" }));
+  check("spend_history filters by day and by kind", later.totals.actions === 0 && other.totals.actions === 0);
+  await call("spend_history", { from: "18/11/2026" }, /YYYY-MM-DD/);
+  await call("spend_history", { from: "2026-11-19", to: "2026-11-18" }, /from is after to/);
+  const realFetch = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async (...a) => { calls++; return realFetch(...a); };
+  H.spendHistory({ format: "csv" });
+  globalThis.fetch = realFetch;
+  check("spend_history makes no network call", calls === 0);
 }
 await client.close();
 console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);

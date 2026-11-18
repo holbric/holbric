@@ -5,6 +5,7 @@ import { publicClient, robinhoodChain, transport, txLink, CHAIN_ID, localTime, f
 import { loadConfig, spentToday, recordSpend } from "./config.js";
 import { walletAddress, loadAccount } from "./keystore.js";
 import { simulateTxs, simulationLines, simView, compareSims } from "./simulate.js";
+import { historyEntry, appendHistory } from "./history.js";
 
 const TTL_MS = 5 * 60 * 1000;
 const pending = new Map();
@@ -101,15 +102,26 @@ export async function execute({ prepareId, confirm }) {
   const c = publicClient();
   const w = createWalletClient({ account, chain: robinhoodChain, transport: transport() });
   const out = { prepareId, kind: p.kind, preSignCheck: `re-simulated at block ${check.simulation.block} (${check.simulation.method}); matches the preview within the ${(p.slippageBps / 100).toFixed(2)}% slippage limit`, transactions: [] };
-  for (const tx of p.txs) {
-    const hash = await w.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ?? 0n });
-    const r = await c.waitForTransactionReceipt({ hash, timeout: 120_000 });
-    out.transactions.push({ step: tx.label, hash, status: r.status, block: r.blockNumber.toString(), explorer: txLink(hash) });
-    if (r.status !== "success") { out.result = `Reverted at: ${tx.label}. Later steps were not sent.`; return out; }
-    if (tx === p.txs[p.txs.length - 1] && p.onReceipt) Object.assign(out, await p.onReceipt(r).catch(() => ({})));
+  const receipts = [];
+  // Whatever happens once a transaction is sent (confirmed, reverted, or an error mid-way), it goes into the local history.
+  const record = () => { if (out.transactions.length) out.historyRecorded = appendHistory(historyEntry(p, out, receipts)); };
+  try {
+    for (const tx of p.txs) {
+      const hash = await w.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ?? 0n });
+      out.transactions.push({ step: tx.label, hash, status: "sent", block: null, explorer: txLink(hash) });
+      const r = await c.waitForTransactionReceipt({ hash, timeout: 120_000 });
+      receipts.push(r);
+      Object.assign(out.transactions[out.transactions.length - 1], { status: r.status, block: r.blockNumber.toString() });
+      if (r.status !== "success") { out.result = `Reverted at: ${tx.label}. Later steps were not sent.`; record(); return out; }
+      if (tx === p.txs[p.txs.length - 1] && p.onReceipt) Object.assign(out, await p.onReceipt(r).catch(() => ({})));
+    }
+  } catch (e) {
+    if (out.transactions.length) { out.result = `Stopped after ${out.transactions.length} sent transaction(s): ${e?.shortMessage || e?.message || e}`; record(); }
+    throw e;
   }
   if (p.usd != null) out.spentTodayUsd = +recordSpend(p.usd).toFixed(2);
   out.result = "Confirmed on Robinhood Chain mainnet.";
+  record();
   return out;
 }
 

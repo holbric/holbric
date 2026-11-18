@@ -18,6 +18,8 @@ const HELP = `holbric ${pkg.version} - one MCP connection to Robinhood Chain mai
   holbric limit <usd|off>           Set or clear the daily USD spend limit for swaps
   holbric aggregators <on|off>      Compare with KyberSwap (third-party API, on by default) or use only Holbric's own routing
   holbric bridges <on|off>          Relay bridge tools (third-party API, on by default); off sends nothing to Relay
+  holbric history [--csv] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD] [--out=FILE]
+                                    Actions this wallet signed through Holbric, from the local record (JSON or CSV)
   holbric export                    Show the private key in this terminal. Terminal only.
   holbric --version`;
 
@@ -120,6 +122,19 @@ async function main() {
     else { console.error("Use a number of USD, e.g. `holbric limit 50`, or `holbric limit off`."); process.exit(1); }
     saveConfig(cfg);
     return console.log(cfg.dailyLimitUsd == null ? "Daily limit cleared." : `Daily limit set to $${cfg.dailyLimitUsd} per day (local date).`);
+  }
+  if (cmd === "history") {
+    const opt = (k) => rest.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3);
+    const { spendHistory } = await import("../src/history.js");
+    let h;
+    try { h = spendHistory({ from: opt("from"), to: opt("to"), kind: opt("kind"), format: flags.has("--csv") ? "csv" : "json" }); }
+    catch (e) { console.error(e.message); process.exit(2); }
+    const text = flags.has("--csv") ? h.csv : JSON.stringify(h, null, 2) + "\n";
+    const out = opt("out");
+    if (out) { writeFileSync(out, text, { mode: 0o600 }); console.error(`Wrote ${h.totals.actions} action(s) to ${out}.`); }
+    else process.stdout.write(text);
+    for (const n of h.notes) console.error(n);
+    return;
   }
   if (cmd === "aggregators") {
     const v = pos[0];

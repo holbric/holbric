@@ -22,6 +22,7 @@ import { portfolio } from "./portfolio.js";
 import { bridgeQuote, prepareBridge, bridgeStatus, bridgesEnabled, RELAY_DEPOSITORY } from "./relay.js";
 import { publicClient, CHAIN_ID, rpcUrl, addrLink } from "./chain.js";
 import { loadConfig, spentToday } from "./config.js";
+import { spendHistory } from "./history.js";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const ok = (data) => ({ content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, (k, v) => (typeof v === "bigint" ? v.toString() : v), 2) }] });
@@ -151,6 +152,10 @@ export const TOOLS = [
     { requestId: z.string().optional().describe("Relay request id (0x..., 32 bytes)"), txHash: z.string().optional().describe("Deposit or fill transaction hash") }, RO, (a) => bridgeStatus(a)],
   ["market_token", "GeckoTerminal", "Market data", "Third-party USD price, volume, liquidity and top pools for a Robinhood Chain token from GeckoTerminal.", { token: z.string() }, RO, (a) => marketToken(a)],
   ["market_trending", "GeckoTerminal", "Trending pools", "Trending pools on Robinhood Chain according to GeckoTerminal.", { limit: z.number().int().min(1).max(20).optional() }, RO, (a) => marketTrending(a)],
+  ["spend_history", "Wallet", "Spend history", "Actions this wallet signed through execute_prepared, from the local record on this computer (~/.holbric/history.jsonl): time, kind, result, transaction hashes with explorer links, Holbric's USD estimate at prepare time and the network fee from the receipts, with totals. As JSON or CSV. Reads no network and sends nothing. Actions from before this record existed, or signed outside Holbric, are not in it.",
+    { from: z.string().optional().describe("First local calendar day, YYYY-MM-DD"), to: z.string().optional().describe("Last local calendar day, YYYY-MM-DD"),
+      kind: z.string().optional().describe("Only this action kind, e.g. swap, send, morpho_borrow"), format: z.enum(["json", "csv"]).optional().describe("Default json"),
+      limit: z.number().int().min(1).max(1000).optional().describe("Only the latest N matching actions") }, { readOnlyHint: true, openWorldHint: false }, (a) => spendHistory(a)],
   ["execute_prepared", "Wallet", "Execute prepared action", "Sign and send an action from any prepare_* tool. Needs its prepareId and confirm: true, which you may only send after the user said yes in chat to that exact summary. It re-simulates first and refuses if the result got worse than the preview. Each prepareId works once and expires after 5 minutes.",
     { prepareId: z.string(), confirm: z.boolean().describe("true only after the user's explicit yes") }, { readOnlyHint: false, destructiveHint: true, openWorldHint: true }, (a) => execute(a)],
 ];

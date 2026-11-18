@@ -9,6 +9,7 @@ export const paths = () => ({
   passphrase: join(HOME(), "passphrase"),
   config: join(HOME(), "config.json"),
   spend: join(HOME(), "spend.json"),
+  history: join(HOME(), "history.jsonl"),
 });
 
 export function ensureDir() {
