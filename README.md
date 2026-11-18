@@ -2,7 +2,7 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.5.0 covers 6 projects with 27 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.6.0 covers 7 projects with 28 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
@@ -11,10 +11,11 @@ Version 0.5.0 covers 6 projects with 27 tools. Every integration below was teste
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
+| KyberSwap aggregator | Holbric's own route against KyberSwap's for the same swap, side by side at one block. KyberSwap's output only counts after its router call is simulated on mainnet. `quote_swap`, `find_route` and `prepare_swap` use it too | `compare_quotes` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -40,7 +41,7 @@ The Holbric token is on Robinhood Chain mainnet. You don't need it to use any Ho
 Holbric is built around three rules:
 
 - **Approvals are exact.** When a token approval is needed, it is for the exact amount of that action, never unlimited.
-- **No Holbric fee.** You pay the network fee in ETH. Pool and curve fees are already counted in every quote.
+- **No Holbric fee.** You pay the network fee in ETH. Pool and curve fees are already counted in every quote. Holbric sends no fee or referral parameters to KyberSwap, and refuses a KyberSwap route or calldata that carries a fee.
 - **The key stays on your computer.** It is stored in `~/.holbric/keystore.json`, encrypted with scrypt and AES-256-GCM. No tool returns the key or the passphrase.
 
 ## Install
@@ -48,7 +49,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.5.0/holbric-0.5.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.6.0/holbric-0.6.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -64,6 +65,7 @@ holbric init --import   # or import a private key (hidden prompt)
 holbric address
 holbric unlock | lock   # store or remove the passphrase file the server signs with
 holbric limit 50        # optional daily USD limit; `holbric limit off` removes it
+holbric aggregators off # use only Holbric's own routing; nothing is sent to KyberSwap (`on` turns it back)
 holbric export          # show the key so you can back it up
 ```
 
@@ -100,6 +102,9 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | Pons V2 meme hook | `0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044` (exact match on Sourcify: PonsV2MemeHook) |
 | ERC-8004 identity / reputation | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` / `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
 | Stock token list | `https://api.robinhood.com/rhj/assets` (the source of the table on docs.robinhood.com/chain/contracts) |
+| KyberSwap MetaAggregationRouterV2 | `0x6131B5fae19EA4f9D964eAc0408E4408b66337b5` (docs.kyberswap.com, Contracts & Addresses, Robinhood (ChainID: 4663); exact match on Sourcify: MetaAggregationRouterV2). The only router Holbric accepts from KyberSwap |
+| KyberSwap AggregationExecutorProxy | `0x8F10B468b06c6FD214B65F87778827F7D113f996` (same docs page). The only executor Holbric accepts in KyberSwap calldata |
+| KyberSwap API | `https://aggregator-api.kyberswap.com/robinhood/api/v1` (`/routes`, `/route/build`), third party |
 | Market data | `https://api.geckoterminal.com/api/v2/networks/robinhood` |
 | Verification | `https://sourcify.dev/server/v2/contract/4663/<address>` |
 
@@ -127,6 +132,23 @@ Robinhood Stock Tokens are never used as a middle hop. A stock token with no dir
 
 Pons quotes come from an `eth_call` simulation of the curve's own `buy` / `sell` functions, with temporary balance overrides. Nothing is signed during a quote. Once a token has graduated, `pons_token` reads its price from the v4 pool, and `pons_quote` and `prepare_pons_trade` use that pool through V4Quoter and the Universal Router. The Pons hook takes its fee and the creator tax from each swap's output; both are inside the quoted amount.
 
+### KyberSwap next to Holbric's own routing
+
+KyberSwap runs an aggregator on Robinhood Chain (chain slug `robinhood` in its API). It reaches liquidity Holbric does not route through itself, such as other DEXs, hooked v4 pools and market-maker pools. Holbric uses it as a second opinion and never trusts its number on its own.
+
+- **Quotes.** With `venue: "best"` (the default), `quote_swap`, `find_route` and `compare_quotes` ask KyberSwap's `/routes` for the same swap. Holbric then asks `/route/build` for a transaction from a throwaway address, gives that address the input by state override, and runs the router call with `eth_simulateV1` on mainnet. KyberSwap only wins if that **simulated** output is higher than Holbric's best Uniswap v3 or v4 route. Both figures are shown, with the block. KyberSwap's API figure and its simulated figure can differ. In our runs, routes through market-maker pools simulated about 0.3% below the API figure.
+- **Swaps.** `prepare_swap` (`venue: "best"`) builds a KyberSwap transaction for your wallet only when KyberSwap's quote is ahead. Holbric decodes the calldata and refuses it unless:
+  - the router is MetaAggregationRouterV2 `0x6131…37b5` and the executor is `0x8F10…f996`;
+  - source token, destination token and amount match your request, and the output goes to your wallet;
+  - the minimum output is at least the KyberSwap output minus your slippage limit;
+  - no fee receivers and no permit are set, and no extra fee is attached.
+  
+  The approval is for the exact input amount, to that router. The transaction is then simulated from your wallet. If it reverts, if it delivers less than its minimum output, if it takes more than the input amount, or if it no longer beats the native route, Holbric prepares the native route and says why in the summary. The minimum-output check runs again inside `execute_prepared` before signing, for every swap, native or KyberSwap.
+- **Venues.** `"best"` uses Holbric's routing and KyberSwap. `"native"` uses Uniswap v3 and v4 only and sends nothing to KyberSwap. `"kyber"` uses KyberSwap only. `"v3"` and `"v4"` work as before.
+- **Failure.** If the API is down, rate limited or answers wrongly, quotes and `prepare_swap` fall back to the native route. `venue: "kyber"` refuses instead.
+- **Privacy.** KyberSwap is a third-party API. A quote sends the two token addresses and the amount. `prepare_swap` also sends your wallet address as sender and recipient, but only when KyberSwap's quote is ahead. To turn it off, set `HOLBRIC_NO_AGGREGATORS=1` in the MCP server's environment, or run `holbric aggregators off`. `chain_status` shows whether it is on.
+- **No fees.** Holbric sends no fee or referral fields to KyberSwap. KyberSwap's request header and `source` field say `holbric`.
+
 ### Pons creator fees
 
 Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit the fee escrow directly. Fees accrue on the launch's curve before graduation, or on the hook after it, until a sweep moves them, so the escrow balance alone can understate what a creator is owed. `pons_creator_fees` reports the escrow balance (`balanceOf` for ETH, `balanceOfToken` for ERC-20s) and the unswept fees (`quoteFeeBalance` / `creatorTaxBalance` on the curve, or `pendingFees` / `pendingCreatorTax` on the hook) separately, plus the creator's estimated share using the contract's own split.
@@ -137,8 +159,9 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 
 ```sh
 npm test                           # both suites below. Never signs.
-node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout, prepare refusals
-node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop and v4 swaps included) with a throwaway wallet, simulates it on mainnet,
+node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout,
+                                   # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, prepare refusals
+node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps included) with a throwaway wallet, simulates it on mainnet,
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
 

@@ -16,6 +16,7 @@ const HELP = `holbric ${pkg.version} - one MCP connection to Robinhood Chain mai
   holbric connect <cursor|claude|codex|gemini|windsurf|vscode> [--global] [--print]
   holbric tools                     List every tool, grouped by project
   holbric limit <usd|off>           Set or clear the daily USD spend limit for swaps
+  holbric aggregators <on|off>      Compare with KyberSwap (third-party API, on by default) or use only Holbric's own routing
   holbric export                    Show the private key in this terminal. Terminal only.
   holbric --version`;
 
@@ -118,6 +119,17 @@ async function main() {
     else { console.error("Use a number of USD, e.g. `holbric limit 50`, or `holbric limit off`."); process.exit(1); }
     saveConfig(cfg);
     return console.log(cfg.dailyLimitUsd == null ? "Daily limit cleared." : `Daily limit set to $${cfg.dailyLimitUsd} per day (local date).`);
+  }
+  if (cmd === "aggregators") {
+    const v = pos[0];
+    const cfg = loadConfig();
+    const env = /^(1|true|yes|on)$/i.test(process.env.HOLBRIC_NO_AGGREGATORS || "");
+    const state = () => (cfg.aggregators === false || env ? "off" : "on");
+    if (!v) return console.log(`KyberSwap aggregator: ${state()}${env ? " (HOLBRIC_NO_AGGREGATORS is set)" : ""}. When on, swap quotes send the token addresses and amount to aggregator-api.kyberswap.com, and prepare_swap sends the wallet address when KyberSwap's quote is ahead.`);
+    if (v !== "on" && v !== "off") { console.error("Use `holbric aggregators on` or `holbric aggregators off`."); process.exit(1); }
+    cfg.aggregators = v === "on";
+    saveConfig(cfg);
+    return console.log(`KyberSwap aggregator ${v}.${v === "on" && env ? " HOLBRIC_NO_AGGREGATORS is still set in this environment, which keeps it off." : ""}${v === "off" ? " Only Holbric's own Uniswap routing is used; nothing is sent to KyberSwap." : ""}`);
   }
   if (cmd === "connect") {
     const { connect } = await import("../src/connect.js");

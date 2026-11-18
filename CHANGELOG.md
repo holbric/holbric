@@ -2,6 +2,37 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.6.0 — 18 November 2026
+
+28 tools across 7 projects on Robinhood Chain mainnet (chain id 4663). Every swap quote now gets a second opinion from the KyberSwap aggregator. Holbric only takes it after simulating it on mainnet.
+
+- **KyberSwap next to Holbric's own routing.** With `venue: "best"` (the default), `quote_swap`, `find_route` and `prepare_swap` ask the KyberSwap Aggregator API (`aggregator-api.kyberswap.com/robinhood`) for the same swap. They also quote Holbric's own Uniswap v3 and v4 routes. KyberSwap's figure is not trusted on its own. Holbric builds KyberSwap's transaction for a throwaway address, gives that address the input by state override, and simulates the router call with `eth_simulateV1`. KyberSwap wins only if that simulated output beats Holbric's best route. New venues: `"native"` (v3 and v4 only, nothing sent to KyberSwap) and `"kyber"` (KyberSwap only).
+- **New `compare_quotes`.** Holbric's best route and KyberSwap's route side by side at one block, with the block time. It shows KyberSwap's API figure, its simulated figure, and which one wins by how much. Example at block 117012359, selling 0.05 AMZN for ETH: Holbric 0.007140204331445412 ETH (AMZN → USDG → ETH on Uniswap v4), KyberSwap 0.007158546347770614 ETH simulated (AMZN → SPY → WETH). KyberSwap was ahead by 0.2568%. At block 117012644, buying AMZN with 0.01 ETH, KyberSwap's API said 0.069772216299223904 AMZN, but its route simulated to 0.06957178323476682. Holbric's own route gave 0.069627588112801698, so Holbric kept it.
+- **Swaps through KyberSwap.** `prepare_swap` builds a KyberSwap transaction for the wallet only when KyberSwap's quote is ahead. Holbric decodes the calldata and refuses it unless:
+  - the router is MetaAggregationRouterV2 `0x6131B5fae19EA4f9D964eAc0408E4408b66337b5` and the executor is `0x8F10B468b06c6FD214B65F87778827F7D113f996` (both from KyberSwap's docs; the router is an exact match on Sourcify for chain 4663);
+  - the tokens and amount match the request, and the output goes to the wallet;
+  - the minimum output is at least the KyberSwap output minus the slippage limit;
+  - no fee receivers, permit or extra fee are set.
+
+  The approval is for the exact input amount, to that router. The transaction is simulated from the wallet. It must deliver its minimum output, take no more than the input amount, and still beat the native route. Otherwise Holbric prepares the native route and says why.
+- **Minimum output checked before signing.** Every swap, native or KyberSwap, now checks in the pre-sign simulation that the wallet receives at least the minimum output. `execute_prepared` checks it again before signing.
+- **Fallback and opt-out.** If KyberSwap is unreachable, rate limited, or returns something that fails these checks, Holbric uses its own route. `venue: "kyber"` refuses instead. Set `HOLBRIC_NO_AGGREGATORS=1` or run `holbric aggregators off` to send nothing to KyberSwap. `chain_status` shows the setting.
+- **Privacy.** KyberSwap is a third-party API. A quote sends it the token addresses and the amount. `prepare_swap` also sends the wallet address, but only when KyberSwap's quote is ahead.
+- **No fees.** No Holbric fee. Holbric sends no fee or referral parameters to KyberSwap and refuses KyberSwap routes or calldata that carry one.
+- **Tests.** 169 checks, all passing: 82 live and 87 write simulations. All 122 earlier checks still pass. Six live route-shape checks and two v4 write simulations now pin `venue: "native"`, because KyberSwap can win those swaps with a different route. New live checks:
+  - the router and executor have code on chain, and the router is an exact match on Sourcify;
+  - `compare_quotes` picks the larger simulated output;
+  - `quote_swap` and `find_route` report KyberSwap next to the native route;
+  - the opt-out sends nothing to KyberSwap;
+  - an unreachable API falls back to the native route;
+  - calldata that pays another address is refused, and so is a route that carries a fee.
+
+  New write simulations prepare and re-check KyberSwap swaps with native ETH in, USDG in (exact approval to the KyberSwap router, native ETH out) and AMZN in. They also check the fallback, the opt-out, and that `execute_prepared` refuses when the output falls below the minimum. Nothing is signed.
+
+Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, GeckoTerminal 2.
+
+Install from the [v0.6.0 release](https://github.com/holbric/holbric/releases/tag/v0.6.0). The package is not on the npm registry yet.
+
 ## 0.5.0 — 18 November 2026
 
 27 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v4 sits next to v3, and Holbric now trades graduated Pons tokens on their v4 pools.

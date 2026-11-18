@@ -7,7 +7,8 @@ import { publicClient, fmt, CHAIN_ID } from "./chain.js";
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
 // eth_simulateV1 reports native ETH movements as Transfer logs from this pseudo-address when traceTransfers is on.
-const NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+export const NATIVE_TRACE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+const NATIVE = NATIVE_TRACE;
 const topicAddr = (t) => getAddress("0x" + t.slice(26));
 
 // Custom errors from the verified Pons V2 curve, hook and escrow sources, so a refusal names the real reason.
@@ -45,10 +46,12 @@ let simulateV1Supported = null;
 export const simulateMethod = () => simulateV1Supported;
 
 /** Simulate txs ([{to,data,value,label}]) from `from`. Returns a plain object with deltas, approvals, gas and per-step status. */
-export async function simulateTxs(from, txs) {
+export async function simulateTxs(from, txs, { stateOverrides: extra } = {}) {
   const c = publicClient();
   const me = getAddress(from);
-  const stateOverrides = overrideProvider ? await overrideProvider(me, txs) : undefined;
+  const provided = overrideProvider ? await overrideProvider(me, txs) : undefined;
+  // extra: overrides for a quote probe address (pretend balance and allowance), used only to check a third-party route.
+  const stateOverrides = extra || provided ? [...(provided || []), ...(extra || [])] : undefined;
   const calls = txs.map((t) => ({ account: me, to: t.to, data: t.data, value: t.value ?? 0n }));
   const [gasPrice, block] = await Promise.all([c.getGasPrice(), c.getBlockNumber()]);
   let res = null;

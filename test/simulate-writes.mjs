@@ -85,14 +85,15 @@ const delta = (r, sym) => r?.simulation.walletDeltas.find((d) => d.symbol === sy
 const v4a = await run("v4 swap 0.01 ETH -> USDG (venue v4, native ETH in)", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "v4" }));
 if (v4a) ok("ETH -> USDG on v4 goes through the Universal Router with ETH as msg.value", !!v4Step(v4a) && v4a.quote.bestVenue === "Uniswap v4" && !/Approve|Permit2/.test(v4a.summary), v4a.quote.route);
 if (v4a) ok("ETH -> USDG on v4 receives at least the quoted minimum", BigInt(delta(v4a, "USDG")?.raw || 0) >= BigInt(v4a.quote.tokenOut.amountOutRaw) * 9950n / 10000n, `${delta(v4a, "USDG")?.change} USDG, quote ${v4a.quote.tokenOut.amountOut}`);
-const v4b = await run("v4 swap 20 USDG -> ORBIT (2 hops on v4 via ETH into the Pons pool)", () => prepareSwap({ tokenIn: "USDG", tokenOut: ORBIT, amount: "20" }));
+const v4b = await run("v4 swap 20 USDG -> ORBIT (2 hops on v4 via ETH into the Pons pool)", () => prepareSwap({ tokenIn: "USDG", tokenOut: ORBIT, amount: "20", venue: "native" }));
 if (v4b) ok("USDG -> ORBIT routes USDG -> ETH -> ORBIT on v4", !!v4Step(v4b) && v4b.quote.hops === 2 && v4b.quote.routeTokens[1] === "ETH" && /v4 Pons/.test(v4b.quote.route), v4b.quote.route);
 if (v4b) ok("USDG -> ORBIT approves exactly 20 USDG to Permit2 and an exact 30-minute Permit2 allowance", /Approve exactly 20 USDG for Permit2/.test(v4b.summary) && /Permit2: let Uniswap Universal Router 0x[0-9a-fA-F]{40} pull exactly 20 USDG, expiring 30 minutes from now/.test(v4b.summary), v4b.simulation.steps.map((s) => s.step).join(" | "));
 const v4c = await run("pons buy 0.002 ETH of graduated ORBIT (v4 Pons pool)", () => preparePonsTrade({ token: ORBIT, side: "buy", amount: "0.002" }));
 if (v4c) ok("graduated Pons buy goes through the v4 Pons pool", !!v4Step(v4c) && /graduated, so the trade goes through its Uniswap v4 pool 0x67d3f533/.test(v4c.summary) && BigInt(delta(v4c, "ORBIT")?.raw || 0) > 0n, `${delta(v4c, "ORBIT")?.change} ORBIT`);
 const v4d = await run("pons sell 100000 ORBIT (graduated, ERC-20 in via Permit2, native ETH out)", () => preparePonsTrade({ token: ORBIT, side: "sell", amount: "100000" }));
 if (v4d) ok("graduated Pons sell pays native ETH to the wallet", !!v4Step(v4d) && /^\+/.test(delta(v4d, "ETH")?.change || "") && /Approve exactly 100000 ORBIT for Permit2/.test(v4d.summary), `${delta(v4d, "ETH")?.change} ETH`);
-const v4e = await run("swap 0.05 AMZN -> ETH (best of v3 and v4)", () => prepareSwap({ tokenIn: AMZN, tokenOut: "ETH", amount: "0.05" }));
+// v4b and v4e pin venue "native" (Holbric's own v3 + v4 routing). Since 0.6.0 the default also asks KyberSwap, which can win.
+const v4e = await run("swap 0.05 AMZN -> ETH (best of v3 and v4)", () => prepareSwap({ tokenIn: AMZN, tokenOut: "ETH", amount: "0.05", venue: "native" }));
 if (v4e) ok("AMZN -> ETH best route was picked from both versions", v4e.quote.compared.v3Routes > 0 && v4e.quote.compared.v4Routes > 0 && /Compared \d+ routes at block \d+ \(\d+ on Uniswap v3, \d+ on Uniswap v4\)/.test(v4e.summary), `${v4e.quote.bestVenue}: ${v4e.quote.route}`);
 if (v4b) {
   const p = _peek(v4b.prepareId);
@@ -106,6 +107,57 @@ await run("v4 swap through a pool with an unknown hook refuses", async () => {
   const q = await quote({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "v4" });
   encodeV4Swap({ ...q.best, keys: q.best.keys.map((k) => ({ ...k, hooks: "0x000000000000000000000000000000000000bEEF" })) }, q.amountIn, 0n, 0n);
 }, { expectError: /Refusing to route through a pool with unknown hook/ });
+// KyberSwap (0.6.0). The route and calldata come from KyberSwap's API for this throwaway wallet; Holbric checks the
+// calldata, simulates the exact transaction from the wallet on mainnet, and re-checks it the way execute_prepared does.
+const { KYBER_ROUTER } = await import("../src/kyber.js");
+const { minReceiveReason } = await import("../src/actions.js");
+const pause = () => new Promise((r) => setTimeout(r, 1500)); // the public KyberSwap endpoint is rate limited
+const kyStep = (r) => r && r.simulation.steps.find((s) => /on KyberSwap \(MetaAggregationRouterV2\.(swap|swapSimpleMode)\)/.test(s.step));
+const outCheck = (r) => r && /Output check in the simulation: the wallet receives [\d.]+ \S+, at or above the minimum [\d.]+ /.test(r.summary);
+const k1 = await run("KyberSwap swap 0.01 ETH -> USDG (venue kyber, native ETH in)", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }));
+if (k1) ok("ETH -> USDG on KyberSwap: router call to MetaAggregationRouterV2, ETH as value, no approval", !!kyStep(k1) && k1.quote.bestVenue === "KyberSwap" && k1.quote.router === KYBER_ROUTER && !/Approve/.test(k1.summary), k1.quote.route);
+if (k1) ok("ETH -> USDG on KyberSwap: simulated output is at or above the minimum", outCheck(k1) && BigInt(delta(k1, "USDG")?.raw || 0) > 0n, `${delta(k1, "USDG")?.change} USDG, min ${k1.quote.tokenOut.minOut}`);
+await pause();
+const k2 = await run("KyberSwap swap 20 USDG -> ETH (venue kyber, exact approval to the KyberSwap router)", () => prepareSwap({ tokenIn: "USDG", tokenOut: "ETH", amount: "20", venue: "kyber" }));
+if (k2) ok("USDG -> ETH on KyberSwap approves exactly 20 USDG to the KyberSwap router and pays native ETH",
+  new RegExp(`Approve exactly 20 USDG for the KyberSwap router, MetaAggregationRouterV2 ${KYBER_ROUTER} \\(current allowance`).test(k2.summary) && !!kyStep(k2) && /^\+/.test(delta(k2, "ETH")?.change || "") && outCheck(k2),
+  `${delta(k2, "ETH")?.change} ETH`);
+if (k2) ok("USDG -> ETH approval is exact, not unlimited", k2.simulation.approvals.some((a) => a.spender === KYBER_ROUTER && a.raw === "20000000"), JSON.stringify(k2.simulation.approvals));
+await pause();
+const k3 = await run("KyberSwap swap 0.05 AMZN -> ETH (venue kyber, stock token in)", () => prepareSwap({ tokenIn: AMZN, tokenOut: "ETH", amount: "0.05", venue: "kyber" }));
+if (k3) ok("AMZN -> ETH on KyberSwap takes exactly 0.05 AMZN and pays ETH", BigInt(delta(k3, "AMZN")?.raw || 0) === -(5n * 10n ** 16n) && /^\+/.test(delta(k3, "ETH")?.change || ""), `${delta(k3, "AMZN")?.change} AMZN, ${delta(k3, "ETH")?.change} ETH`);
+await pause();
+const kb = await run("swap 0.01 ETH -> AMZN (venue best: native vs KyberSwap)", () => prepareSwap({ tokenIn: "ETH", tokenOut: AMZN, amount: "0.01" }));
+if (kb) ok(`best ETH -> AMZN states which source was used and why (${kb.quote.bestVenue})`, kb.quote.bestVenue === "KyberSwap"
+  ? /through KyberSwap/.test(kb.summary) && /Compared at block \d+: KyberSwap/.test(kb.summary)
+  : /KyberSwap was compared and not used: /.test(kb.summary), (kb.summary.match(/KyberSwap was compared and not used: [^\n]*/) || [kb.quote.route])[0]);
+// execute_prepared must refuse when the re-simulated output falls under the minimum output.
+if (k2) {
+  const p = _peek(k2.prepareId);
+  p.minReceive = { ...p.minReceive, amount: (p.sim._raw.inflows.get(p.minReceive.token) ?? 0n) * 2n }; // demand twice what the preview showed
+  const again = await recheck(p);
+  ok("re-check refuses a KyberSwap swap whose output falls below the minimum", !again.ok && /below the minimum output/.test(again.reason || ""), again.reason);
+  try { await execute({ prepareId: k2.prepareId, confirm: true }); ok("execute refuses below the minimum output", false, "it did not refuse"); }
+  catch (e) { ok("execute refuses below the minimum output before signing", /^Refused before signing: .*below the minimum output/.test(e.message), e.message); }
+}
+ok("native swaps also carry the simulated minimum-output check", outCheck(v4a) && outCheck(mh1), "v4 ETH -> USDG and v3 ETH -> AMZN");
+ok("minReceive check: a traced simulation under the minimum gives a reason", !!minReceiveReason({ _raw: { inflows: new Map() } }, { token: ADDR.USDG, amount: 1n, symbol: "USDG", decimals: 6 }));
+// KyberSwap down or turned off: venue best prepares the native route and says why; venue kyber refuses.
+{
+  const realFetch = globalThis.fetch;
+  let kyberCalls = 0;
+  globalThis.fetch = async (url, init) => { if (String(url).includes("kyberswap.com")) { kyberCalls++; throw new TypeError("fetch failed"); } return realFetch(url, init); };
+  const fb = await run("swap 0.01 ETH -> USDG with KyberSwap unreachable (falls back to native)", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01" }));
+  if (fb) ok("fallback summary names the KyberSwap failure and uses Uniswap", /KyberSwap was compared and not used: KyberSwap API unreachable/.test(fb.summary) && fb.quote.bestVenue.startsWith("Uniswap") && kyberCalls > 0, fb.quote.route);
+  await run("venue kyber with KyberSwap unreachable refuses", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }), { expectError: /KyberSwap route not prepared: KyberSwap API unreachable/ });
+  kyberCalls = 0;
+  process.env.HOLBRIC_NO_AGGREGATORS = "1";
+  const offr = await run("swap 0.01 ETH -> USDG with HOLBRIC_NO_AGGREGATORS=1", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01" }));
+  if (offr) ok("HOLBRIC_NO_AGGREGATORS=1: native route, nothing sent to KyberSwap", /KyberSwap was not asked: it is turned off/.test(offr.summary) && kyberCalls === 0);
+  await run("HOLBRIC_NO_AGGREGATORS=1: venue kyber refuses", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }), { expectError: /KyberSwap is turned off/ });
+  delete process.env.HOLBRIC_NO_AGGREGATORS;
+  globalThis.fetch = realFetch;
+}
 await run("pons buy 0.001 ETH of HOLBRIC", () => preparePonsTrade({ token: HOLBRIC, side: "buy", amount: "0.001" }));
 await run("pons sell 1000000 HOLBRIC", () => preparePonsTrade({ token: HOLBRIC, side: "sell", amount: "1000000" }));
 await run("register ERC-8004 agent", () => prepareRegisterAgent({ agentURI: "https://holbric.com/agent.json" }));

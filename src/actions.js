@@ -37,7 +37,18 @@ export function approveTx(token, spender, amount, symbol, decimals) {
 }
 
 /** Store an action. txs: [{label,to,data,value}]; lines: plain-language steps. */
-export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt, slippageBps, valueLine }) {
+/**
+ * minReceive check on a traced simulation: what the wallet receives of `token` must be at least `amount`.
+ * Returns null when it holds, otherwise a reason. Untraced (eth_call fallback) simulations cannot be checked and return null.
+ */
+export function minReceiveReason(sim, m) {
+  if (!m || !sim._raw) return null;
+  const got = sim._raw.inflows.get(m.token) ?? 0n;
+  if (got >= m.amount) return null;
+  return `the wallet would receive ${fmt(got, m.decimals, 18)} ${m.symbol}, below the minimum output of ${fmt(m.amount, m.decimals, 18)} ${m.symbol}`;
+}
+
+export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt, slippageBps, valueLine, minReceive }) {
   sweep();
   const c = publicClient();
   const ethBal = await c.getBalance({ address: from });
@@ -48,15 +59,19 @@ export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt
     const bad = sim.steps.find((s) => s.status === "failure");
     throw new Error(`Pre-sign simulation on mainnet failed at "${bad.step}": ${bad.error}. Nothing was prepared.`);
   }
+  const short = minReceiveReason(sim, minReceive);
+  if (short) throw new Error(`Pre-sign simulation on mainnet: ${short}. Nothing was prepared.`);
+  const minLine = minReceive && sim._raw ? [`Output check in the simulation: the wallet receives ${fmt(sim._raw.inflows.get(minReceive.token) ?? 0n, minReceive.decimals, 18)} ${minReceive.symbol}, at or above the minimum ${fmt(minReceive.amount, minReceive.decimals, 18)} ${minReceive.symbol}. execute_prepared checks this again before signing.`] : [];
   const slip = slippageBps ?? slippage();
   const limit = loadConfig().dailyLimitUsd;
   const id = "hp_" + randomBytes(6).toString("hex");
   const expiresAt = Date.now() + TTL_MS;
-  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt, sim, slippageBps: slip });
+  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt, sim, slippageBps: slip, minReceive });
   const summary = [
     `From wallet ${from} on Robinhood Chain mainnet (chain id ${CHAIN_ID}).`,
     ...lines.map((s, i) => `${i + 1}. ${s}`),
     ...simulationLines(sim),
+    ...minLine,
     `${txs.length} transaction${txs.length > 1 ? "s" : ""} to sign. Network fee is paid in ETH (wallet holds ${fmt(ethBal, 18)} ETH). No Holbric fee.`,
     valueLine ? valueLine : usd === 0 ? "No tokens leave the wallet; only the network fee is paid." : usd != null ? `Approximate value: $${usd.toFixed(2)}${limit != null ? ` (daily limit $${limit}, spent today $${spentToday().toFixed(2)})` : ""}.` : "Approximate USD value: not available.",
     `This preview expires at ${localTime(new Date(expiresAt))}. Show it to the user and ask for a clear yes or no before calling execute_prepared.`,
@@ -67,7 +82,7 @@ export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt
 /** Re-simulate a prepared action and compare with its preview. Returns { ok, reason, simulation }. Never signs. */
 export async function recheck(p) {
   const sim = await simulateTxs(p.from, p.txs);
-  const reason = compareSims(p.sim, sim, p.slippageBps);
+  const reason = compareSims(p.sim, sim, p.slippageBps) || minReceiveReason(sim, p.minReceive);
   return { ok: !reason, reason, simulation: simView(sim) };
 }
 
