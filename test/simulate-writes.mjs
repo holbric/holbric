@@ -99,7 +99,7 @@ const v4d = await run("pons sell 100000 ORBIT (graduated, ERC-20 in via Permit2,
 if (v4d) ok("graduated Pons sell pays native ETH to the wallet", !!v4Step(v4d) && /^\+/.test(delta(v4d, "ETH")?.change || "") && /Approve exactly 100000 ORBIT for Permit2/.test(v4d.summary), `${delta(v4d, "ETH")?.change} ETH`);
 // v4b and v4e pin venue "native" (Holbric's own v3 + v4 routing). Since 0.6.0 the default also asks KyberSwap, which can win.
 const v4e = await run("swap 0.05 AMZN -> ETH (best of v3 and v4)", () => prepareSwap({ tokenIn: AMZN, tokenOut: "ETH", amount: "0.05", venue: "native" }));
-if (v4e) ok("AMZN -> ETH best route was picked from both versions", v4e.quote.compared.v3Routes > 0 && v4e.quote.compared.v4Routes > 0 && /Compared \d+ routes at block \d+ \(\d+ on Uniswap v3, \d+ on Uniswap v4\)/.test(v4e.summary), `${v4e.quote.bestVenue}: ${v4e.quote.route}`);
+if (v4e) ok("AMZN -> ETH best route was picked from both versions", v4e.quote.compared.v3Routes > 0 && v4e.quote.compared.v4Routes > 0 && /Compared \d+ routes at block \d+ \(\d+ on Uniswap v3, \d+ on Uniswap v4, \d+ on Ramses V3\)/.test(v4e.summary), `${v4e.quote.bestVenue}: ${v4e.quote.route}`);
 if (v4b) {
   const p = _peek(v4b.prepareId);
   for (const [k, v] of p.sim._raw.inflows) p.sim._raw.inflows.set(k, v * 2n);
@@ -482,6 +482,20 @@ ok("sweepFees from a non-creator reverts", notCreator.steps[0].status === "failu
   ok("appendHistory writes the record", H.appendHistory(e) && H.appendHistory(reverted));
   const back = H.spendHistory({});
   ok("spendHistory reads both back with totals", back.totals.actions === 2 && back.totals.confirmed === 1 && back.entries[0].prepareId === r.prepareId, JSON.stringify(back.totals.byKind));
+}
+
+// ---- Ramses V3 swaps (after 0.10.0, unreleased): prepared, simulated and re-checked, never signed ----------------------
+{
+  const { RAMSES } = await import("../src/ramses.js");
+  const a = await run("Ramses swap 5 USDG -> WETH", () => prepareSwap({ tokenIn: "USDG", tokenOut: "WETH", amount: "5", venue: "ramses" }));
+  if (a) {
+    ok("Ramses USDG -> WETH: Ramses V3 route, exact 5 USDG approval to the Ramses SwapRouter", a.quote.bestVenue === "Ramses V3" && new RegExp(`Approve exactly 5 USDG for the Ramses V3 SwapRouter ${RAMSES.SWAP_ROUTER}`).test(a.summary), a.quote.route);
+    ok("Ramses USDG -> WETH: exactly 5 USDG leaves, WETH arrives", delta(a, "USDG")?.change === "-5" && /^\+/.test(delta(a, "WETH")?.change || ""), `${delta(a, "USDG")?.change} USDG, ${delta(a, "WETH")?.change} WETH`);
+  }
+  const b = await run("Ramses swap 0.002 ETH -> USDG", () => prepareSwap({ tokenIn: "ETH", tokenOut: "USDG", amount: "0.002", venue: "ramses" }));
+  if (b) ok("Ramses ETH -> USDG: ETH goes in as value, no approval, USDG arrives", !/Approve/.test(b.summary) && /^\+/.test(delta(b, "USDG")?.change || "") && b.simulation.steps.length === 1, `${delta(b, "USDG")?.change} USDG`);
+  const d = await run("Ramses swap 5 USDG -> ETH (unwrapped)", () => prepareSwap({ tokenIn: "USDG", tokenOut: "ETH", amount: "5", venue: "ramses" }));
+  if (d) ok("Ramses USDG -> ETH: the router unwraps WETH and the wallet receives native ETH", /WETH is unwrapped to ETH/.test(d.summary) && /^\+/.test(delta(d, "ETH")?.change || ""), `${delta(d, "ETH")?.change} ETH`);
 }
 
 console.log(`\nSimulation method: ${simulateMethod() ? "eth_simulateV1" : "eth_call fallback"}. ${pass} passed, ${fail} failed. Nothing was signed or sent.`);

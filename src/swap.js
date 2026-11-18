@@ -2,7 +2,8 @@ import { parseUnits, formatUnits, erc20Abi, encodeFunctionData, getAddress, isAd
 import { ADDR, publicClient, resolveToken, poolAddress, CHAIN_ID, fmt, localTime } from "./chain.js";
 import { walletAddress } from "./keystore.js";
 import { requireWallet, slippage, checkLimit, approveTx, store } from "./actions.js";
-import { findRoutes, describe, routeView, feeText, FEE_TIERS } from "./route.js";
+import { findRoutes, describe, routeView, feeText, venueLabel, FEE_TIERS } from "./route.js";
+import { findRamsesRoutes, buildRamses, RAMSES, TICK_SPACINGS } from "./ramses.js";
 import { findV4Routes, currencyOf, encodeV4Swap, permit2Abi, isPonsKey, isAllowedHook, makeKey, NATIVE } from "./v4.js";
 import { aggregatorsEnabled, disabledReason, kyberRoute, kyberSimulate, kyberBuild, KYBER_ROUTER } from "./kyber.js";
 import { simulateTxs, NATIVE_TRACE } from "./simulate.js";
@@ -30,10 +31,12 @@ const routerAbi = [
   { type: "function", name: "WETH9", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ];
 
-const VENUES = ["best", "native", "v3", "v4"]; // Holbric's own routing (quote). "kyber" is handled in bestQuote / prepareSwap.
-export const ALL_VENUES = ["best", "native", "kyber", "v3", "v4"];
+const VENUES = ["best", "native", "v3", "v4", "ramses", "uniswap"]; // Holbric's own routing (quote). "kyber" is handled in bestQuote / prepareSwap.
+// "uniswap" (internal, not a tool option): Uniswap v3 + v4 only. Valuations (portfolio, Morpho, the daily limit) use it, as documented.
+export const ALL_VENUES = ["best", "native", "kyber", "v3", "v4", "ramses"];
 const V3_VENUE = `Uniswap v3 QuoterV2 ${ADDR.QUOTER_V2} (quoteExactInput), pools from factory ${ADDR.UNISWAP_V3_FACTORY}`;
 const V4_VENUE = `Uniswap v4 V4Quoter ${ADDR.V4_QUOTER}, pools read from StateView ${ADDR.V4_STATE_VIEW} (PoolManager ${ADDR.V4_POOL_MANAGER})`;
+const RAMSES_VENUE = `Ramses V3 QuoterV2 ${RAMSES.QUOTER_V2} (quoteExactInput), pools from factory ${RAMSES.FACTORY}`;
 const byOutput = (a, b) => (b.amountOut > a.amountOut ? 1 : b.amountOut < a.amountOut ? -1 : a.hops - b.hops);
 
 /**
@@ -60,33 +63,36 @@ export async function quote({ tokenIn, tokenOut, amount, venue = "best", poolKey
       throw new Error(`That pool key is ${onlyKey.currency0}/${onlyKey.currency1}; it does not trade ${tIn.symbol} (${cIn}) for ${tOut.symbol} (${cOut}). On v4, native ETH is 0x0000000000000000000000000000000000000000 and WETH is its own currency.`);
   }
   const empty = { routes: [], failed: [], poolsRead: 0, intermediatesTried: [] };
-  const [v3, v4] = await Promise.all([
-    venue === "v4" ? empty : findRoutes({ tIn, tOut, addrIn: poolAddress(tIn), addrOut: poolAddress(tOut), amountIn }),
-    venue === "v3" ? empty : findV4Routes({ symIn: tIn.symbol, symOut: tOut.symbol, cIn: currencyOf(tIn), cOut: currencyOf(tOut), amountIn, onlyKey }),
+  const want = (v) => venue === "best" || venue === v || (venue === "uniswap" && (v === "v3" || v === "v4"));
+  const [v3, v4, ra] = await Promise.all([
+    want("v3") ? findRoutes({ tIn, tOut, addrIn: poolAddress(tIn), addrOut: poolAddress(tOut), amountIn }) : empty,
+    want("v4") ? findV4Routes({ symIn: tIn.symbol, symOut: tOut.symbol, cIn: currencyOf(tIn), cOut: currencyOf(tOut), amountIn, onlyKey }) : empty,
+    want("ramses") ? findRamsesRoutes({ tIn, tOut, addrIn: poolAddress(tIn), addrOut: poolAddress(tOut), amountIn }) : empty,
   ]);
-  const all = [...v3.routes, ...v4.routes].sort(byOutput);
-  const failed = [...v3.failed, ...v4.failed.map(describe)];
-  const found = { routes: all, failed, poolsRead: v3.poolsRead + v4.poolsRead, v3: { routes: v3.routes.length, pools: v3.poolsRead, via: v3.intermediatesTried }, v4: { routes: v4.routes.length, pools: v4.poolsRead, via: v4.intermediatesTried } };
+  const all = [...v3.routes, ...v4.routes, ...ra.routes].sort(byOutput);
+  const failed = [...v3.failed, ...v4.failed.map(describe), ...ra.failed.map(describe)];
+  const found = { routes: all, failed, poolsRead: v3.poolsRead + v4.poolsRead + ra.poolsRead, v3: { routes: v3.routes.length, pools: v3.poolsRead, via: v3.intermediatesTried }, v4: { routes: v4.routes.length, pools: v4.poolsRead, via: v4.intermediatesTried }, ramses: { routes: ra.routes.length, pools: ra.poolsRead, via: ra.intermediatesTried } };
   const best = all[0];
   if (!best) throw new Error(onlyKey
     ? `Uniswap v4 returned no quote for ${tIn.symbol} -> ${tOut.symbol} on that pool key (pool not initialized, no liquidity in range, or the swap reverts).`
-    : `No ${venue === "best" ? "Uniswap v3 or v4" : "Uniswap " + venue} route on Robinhood Chain quoted ${tIn.symbol} -> ${tOut.symbol}: no live pool directly and none through ${[...new Set([...v3.intermediatesTried, ...v4.intermediatesTried])].join(", ") || "any middle token"}.`);
+    : `No ${venue === "best" ? "Uniswap v3, Uniswap v4 or Ramses V3" : venue === "ramses" ? "Ramses V3" : venue === "uniswap" ? "Uniswap v3 or v4" : "Uniswap " + venue} route on Robinhood Chain quoted ${tIn.symbol} -> ${tOut.symbol}: no live pool directly and none through ${[...new Set([...v3.intermediatesTried, ...v4.intermediatesTried, ...ra.intermediatesTried])].join(", ") || "any middle token"}.`);
   const block = await publicClient().getBlockNumber();
   const priceOutPerIn = Number(formatUnits(best.amountOut, tOut.decimals)) / Number(amount);
-  const venueText = venue === "v3" ? V3_VENUE : venue === "v4" ? V4_VENUE : `${V3_VENUE}; ${V4_VENUE}`;
+  const venueText = venue === "v3" ? V3_VENUE : venue === "v4" ? V4_VENUE : venue === "ramses" ? RAMSES_VENUE : venue === "uniswap" ? `${V3_VENUE}; ${V4_VENUE}` : `${V3_VENUE}; ${V4_VENUE}; ${RAMSES_VENUE}`;
   return {
     tIn, tOut, amountIn, best, all, found, block, venue,
     view: {
       chainId: CHAIN_ID, block: block.toString(), quotedAt: new Date().toISOString(), quotedAtLocal: localTime(new Date()),
-      venue: venueText, bestVenue: best.venue === "v4" ? "Uniswap v4" : "Uniswap v3",
+      venue: venueText, bestVenue: venueLabel(best),
       tokenIn: { symbol: tIn.symbol, address: tIn.address ?? "native", amount: fmt(amountIn, tIn.decimals, 18) },
       tokenOut: { symbol: tOut.symbol, address: tOut.address ?? "native", amountOut: fmt(best.amountOut, tOut.decimals, 18), amountOutRaw: best.amountOut.toString() },
       route: describe(best), hops: best.hops, routeTokens: best.symbols, feeTier: feeText(best),
       ...(best.venue === "v4" ? { poolIds: best.pools, poolKeys: best.keys } : { pools: best.pools }),
+      ...(best.venue === "ramses" ? { tickSpacings: best.tickSpacings } : {}),
       price: `1 ${tIn.symbol} = ${priceOutPerIn.toPrecision(8)} ${tOut.symbol}`,
       gasEstimate: best.gasEstimate.toString(),
-      compared: { routesQuoted: all.length, v3Routes: v3.routes.length, v4Routes: v4.routes.length, livePoolsRead: found.poolsRead,
-        via: [...new Set([...v3.intermediatesTried, ...v4.intermediatesTried])], noQuote: failed.length },
+      compared: { routesQuoted: all.length, v3Routes: v3.routes.length, v4Routes: v4.routes.length, ramsesRoutes: ra.routes.length, livePoolsRead: found.poolsRead,
+        via: [...new Set([...v3.intermediatesTried, ...v4.intermediatesTried, ...ra.intermediatesTried])], noQuote: failed.length },
       alternatives: all.slice(1, 8).map((r) => ({ route: describe(r), amountOut: fmt(r.amountOut, tOut.decimals, 18), vsBestPct: routeView(r, tOut, best).vsBestPct })),
       ...(tIn.unverified || tOut.unverified ? { warning: "One token is not in Holbric's verified list (ETH, USDG, WETH). Check the contract on the explorer." } : {}),
     },
@@ -97,7 +103,7 @@ export async function quote({ tokenIn, tokenOut, amount, venue = "best", poolKey
 export async function usdValue(tIn, amountIn) {
   if (tIn.address === ADDR.USDG) return Number(formatUnits(amountIn, 6));
   if (amountIn === 0n) return 0;
-  const q = await quote({ tokenIn: tIn.native ? "ETH" : tIn.address, tokenOut: "USDG", amount: formatUnits(amountIn, tIn.decimals) });
+  const q = await quote({ tokenIn: tIn.native ? "ETH" : tIn.address, tokenOut: "USDG", amount: formatUnits(amountIn, tIn.decimals), venue: "uniswap" });
   return Number(formatUnits(q.best.amountOut, 6));
 }
 
@@ -112,12 +118,14 @@ async function prepareNative({ tokenIn, tokenOut, amount, slippageBps, venue = "
   if (balance < amountIn) throw new Error(`Not enough ${tIn.symbol}: wallet ${from} holds ${fmt(balance, tIn.decimals, 18)}, swap needs ${fmt(amountIn, tIn.decimals, 18)}. Nothing was prepared.`);
   const usd = await usdValue(tIn, amountIn).catch(() => null);
   checkLimit(usd);
-  const built = best.venue === "v4" ? await buildV4({ c, from, tIn, tOut, amountIn, best, minOut }) : await buildV3({ c, from, tIn, tOut, amountIn, best, minOut });
+  const built = best.venue === "v4" ? await buildV4({ c, from, tIn, tOut, amountIn, best, minOut })
+    : best.venue === "ramses" ? await buildRamses({ c, from, tIn, tOut, amountIn, best, minOut, poolAddress, approveTx, deadline: deadlineIn(15) })
+    : await buildV3({ c, from, tIn, tOut, amountIn, best, minOut });
   const { txs, lines } = built;
-  lines.push(`Swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} for at least ${fmt(minOut, tOut.decimals)} ${tOut.symbol} (expected ${fmt(best.amountOut, tOut.decimals)}) on ${best.venue === "v4" ? "Uniswap v4" : "Uniswap v3"}. Slippage limit ${(slip / 100).toFixed(2)}%, deadline 15 minutes from now.`);
+  lines.push(`Swap ${fmt(amountIn, tIn.decimals, 18)} ${tIn.symbol} for at least ${fmt(minOut, tOut.decimals)} ${tOut.symbol} (expected ${fmt(best.amountOut, tOut.decimals)}) on ${venueLabel(best)}. Slippage limit ${(slip / 100).toFixed(2)}%, deadline 15 minutes from now.`);
   lines.push(built.routeLine);
   const alts = q.all.slice(1, 6).map((r) => `${describe(r)} = ${fmt(r.amountOut, tOut.decimals)} ${tOut.symbol}`);
-  lines.push(`Compared ${q.all.length} route${q.all.length > 1 ? "s" : ""} at block ${q.block} (${q.found.v3.routes} on Uniswap v3, ${q.found.v4.routes} on Uniswap v4)${alts.length ? `; next best: ${alts.join("; ")}` : "; no other route had a live pool"}.`);
+  lines.push(`Compared ${q.all.length} route${q.all.length > 1 ? "s" : ""} at block ${q.block} (${q.found.v3.routes} on Uniswap v3, ${q.found.v4.routes} on Uniswap v4, ${q.found.ramses.routes} on Ramses V3)${alts.length ? `; next best: ${alts.join("; ")}` : "; no other route had a live pool"}.`);
   lines.push(...extraLines);
   return store({ kind, from, txs, lines, usd, onReceipt: receiptReader(from, tOut), slippageBps: slip, extra: { quote: q.view },
     minReceive: { token: outKey(tOut), amount: minOut, symbol: tOut.symbol, decimals: tOut.decimals } });
@@ -217,7 +225,7 @@ export async function routerWeth() {
 
 /** a vs b in percent, 4 decimals (positive when a is larger). */
 const pctDiff = (a, b) => (b > 0n ? Number(((a - b) * 1000000n) / b) / 10000 : null);
-const venueName = (r) => (r.venue === "v4" ? "Uniswap v4" : "Uniswap v3");
+const venueName = (r) => venueLabel(r);
 
 async function resolvePair(tokenIn, tokenOut, amount) {
   const [tIn, tOut] = await Promise.all([resolveToken(tokenIn), resolveToken(tokenOut)]);
@@ -320,12 +328,13 @@ export async function findRoute(args) {
     tokenIn: v.tokenIn, tokenOut: { symbol: tOut.symbol, address: tOut.address ?? "native" },
     best, alternatives,
     kyberswap: b.view.kyberswap,
-    compared: q ? { v3Routes: q.found.v3.routes, v4Routes: q.found.v4.routes, livePoolsRead: q.found.poolsRead } : { v3Routes: 0, v4Routes: 0, livePoolsRead: 0 },
+    compared: q ? { v3Routes: q.found.v3.routes, v4Routes: q.found.v4.routes, ramsesRoutes: q.found.ramses.routes, livePoolsRead: q.found.poolsRead } : { v3Routes: 0, v4Routes: 0, ramsesRoutes: 0, livePoolsRead: 0 },
     notQuoted: q ? q.found.failed : [],
     method: [
-      q && q.venue !== "v4" ? `Uniswap v3: direct pools at ${FEE_TIERS.map((f) => f / 10000 + "%").join(", ")} plus 2-hop routes through ${q.found.v3.via.join(", ")}, read from the v3 factory, each path quoted with QuoterV2.quoteExactInput.` : null,
-      q && q.venue !== "v3" ? `Uniswap v4: hookless pools at the standard keys (0.01%/1, 0.05%/10, 0.3%/60, 1%/200) and graduated Pons V2 pools (key from the Pons factory record, Pons hook), direct or 2 hops through ${q.found.v4.via.join(", ") || "none"}, liquidity read from StateView, each path quoted with V4Quoter. Pools with any other hook are skipped.` : null,
-      q ? "Pools with zero in-range liquidity are skipped, up to 3 pools per leg. A route stays on one Uniswap version." : null,
+      q && ["best", "v3"].includes(q.venue) ? `Uniswap v3: direct pools at ${FEE_TIERS.map((f) => f / 10000 + "%").join(", ")} plus 2-hop routes through ${q.found.v3.via.join(", ")}, read from the v3 factory, each path quoted with QuoterV2.quoteExactInput.` : null,
+      q && ["best", "v4"].includes(q.venue) ? `Uniswap v4: hookless pools at the standard keys (0.01%/1, 0.05%/10, 0.3%/60, 1%/200) and graduated Pons V2 pools (key from the Pons factory record, Pons hook), direct or 2 hops through ${q.found.v4.via.join(", ") || "none"}, liquidity read from StateView, each path quoted with V4Quoter. Pools with any other hook are skipped.` : null,
+      q && ["best", "ramses"].includes(q.venue) ? `Ramses V3: pools from the Ramses factory at tick spacings ${TICK_SPACINGS.join(", ")} (each pool's fee read at this block; Ramses can change it), direct or 2 hops through ${q.found.ramses.via.join(", ") || "none"}, each path quoted with the Ramses QuoterV2.` : null,
+      q ? "Pools with zero in-range liquidity are skipped, up to 3 pools per leg (2 on Ramses). A route stays on one venue." : null,
       k ? "KyberSwap: route from its third-party API, router call simulated on mainnet; it only counts with a simulated output." : null,
       "The highest output wins; prepare_swap uses the same choice and simulates again from your wallet.",
     ].filter(Boolean).join(" "),
@@ -365,7 +374,7 @@ export async function compareQuotes({ tokenIn, tokenOut, amount }) {
 export async function prepareSwap(args) {
   const { tokenIn, tokenOut, amount, slippageBps, venue = "best", poolKey = null } = args;
   if (!ALL_VENUES.includes(venue)) throw new Error(`venue must be one of ${ALL_VENUES.join(", ")}.`);
-  if (poolKey || venue === "v3" || venue === "v4" || venue === "native") return prepareNative(args);
+  if (poolKey || venue === "v3" || venue === "v4" || venue === "ramses" || venue === "native") return prepareNative(args);
   if (!aggregatorsEnabled()) {
     if (venue === "kyber") throw new Error(`KyberSwap is turned off (${disabledReason()}). Use venue "native", or turn it on with \`holbric aggregators on\`.`);
     return prepareNative({ ...args, venue: "best", extraLines: [...(args.extraLines || []), `KyberSwap was not asked: it is turned off (${disabledReason()}).`] });

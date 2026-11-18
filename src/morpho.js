@@ -174,7 +174,7 @@ export async function unitUsd(meta) {
   const hit = priceCache.get(meta.address); if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.v;
   let v = null;
   for (const amt of ["1", "0.01", "0.0001"]) {
-    try { const q = await quote({ tokenIn: meta.address, tokenOut: "USDG", amount: amt }); v = Number(formatUnits(q.best.amountOut, 6)) / Number(amt); break; } catch {}
+    try { const q = await quote({ tokenIn: meta.address, tokenOut: "USDG", amount: amt, venue: "uniswap" }); v = Number(formatUnits(q.best.amountOut, 6)) / Number(amt); break; } catch {}
   }
   priceCache.set(meta.address, { at: Date.now(), v });
   return v;

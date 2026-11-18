@@ -37,7 +37,7 @@ async function sellUsd(meta, amount, ethUsd) {
   if (meta.address === ADDR.USDG) return { usd: Number(formatUnits(amount, 6)), by: "USDG at face value" };
   const human = formatUnits(amount, meta.decimals);
   try {
-    const q = await quote({ tokenIn: meta.native ? "ETH" : meta.address, tokenOut: "USDG", amount: human });
+    const q = await quote({ tokenIn: meta.native ? "ETH" : meta.address, tokenOut: "USDG", amount: human, venue: "uniswap" });
     return { usd: Number(formatUnits(q.best.amountOut, 6)), by: q.view.route };
   } catch (e) {
     if (meta.kind === "pons-v2-launch") {
@@ -51,7 +51,7 @@ async function sellUsd(meta, amount, ethUsd) {
         const pairSym = p.amountOut.split(" ").pop();
         if (getAddress(p.pairToken) === ADDR.USDG) return { usd: Number(formatUnits(BigInt(p.amountOutRaw), 6)), by: `${stage} into USDG` };
         const pd = await publicClient().readContract({ address: p.pairToken, abi: erc20Abi, functionName: "decimals" });
-        const pq = await quote({ tokenIn: p.pairToken, tokenOut: "USDG", amount: formatUnits(BigInt(p.amountOutRaw), Number(pd)) });
+        const pq = await quote({ tokenIn: p.pairToken, tokenOut: "USDG", amount: formatUnits(BigInt(p.amountOutRaw), Number(pd)), venue: "uniswap" });
         return { usd: Number(formatUnits(pq.best.amountOut, 6)), by: `${stage} into ${pairSym}, then ${pq.view.route}` };
       } catch {}
     }
@@ -111,7 +111,7 @@ export async function portfolio({ address, lookbackHours = 24, tokens = [], incl
   const morpho = includeMorpho ? await readPositions(who, block) : null;
 
   // 3. Prices: one ETH -> USDG quote for the ETH figure, then a sell-all quote per holding.
-  const ethQ = await quote({ tokenIn: "ETH", tokenOut: "USDG", amount: "1" });
+  const ethQ = await quote({ tokenIn: "ETH", tokenOut: "USDG", amount: "1", venue: "uniswap" });
   priceCache.clear();
   const ethUsd = Number(formatUnits(ethQ.best.amountOut, 6));
   const ethMeta = { native: true, symbol: "ETH", decimals: 18, address: null, kind: "base" };

@@ -2,7 +2,7 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.10.0 covers 9 projects with 48 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it. Not released yet: `spend_history` and `holbric history` (see [Spend history](#spend-history-not-released-yet)) are on this branch after 0.10.0 and make 49 tools.
+Version 0.10.0 covers 9 projects with 48 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it. Not released yet, on this branch after 0.10.0: `spend_history` and `holbric history` (see [Spend history](#spend-history-not-released-yet)), and Ramses V3 in swap routing plus `ramses_pools` (see [Ramses V3](#ramses-v3-not-released-yet)). Together they make 10 projects with 50 tools.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
@@ -224,6 +224,22 @@ There is no PnL. An honest one needs the price of every token at every past tran
 ### ERC-8004 feedback
 
 `prepare_agent_feedback` calls `giveFeedback` on the reputation registry `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` (a proxy; implementation `0x16e0FA7f7C56B9a767E34B192B51f921BE31dA34`, exact match on Sourcify as ReputationRegistryUpgradeable; its `getIdentityRegistry()` is the identity registry Holbric uses). The value is a decimal such as `5`, `4.5` or `-1` (up to 18 decimals, at most 1e38 in absolute value), with optional tags, an endpoint, an https or ipfs feedbackURI and a 32-byte hash. The registry refuses feedback from an agent's owner or operators; Holbric checks `isAuthorizedOrOwner` first and says so. Feedback is public, permanent and tied to your wallet. `prepare_revoke_feedback` marks one of your entries as revoked: it stays on chain, and summaries stop counting it.
+
+### Ramses V3 (not released yet)
+
+Ramses V3 is a concentrated-liquidity DEX on Robinhood Chain built like Uniswap v3, with pools keyed by tick spacing instead of a fee tier. Holbric uses only the contracts Ramses publishes for Robinhood ([ramses.xyz/docs/contract-addresses](https://ramses.xyz/docs/contract-addresses), "Robinhood" -> "V3 AMM"), each verified on Sourcify and checked on chain on every test run:
+
+| Contract | Address |
+| --- | --- |
+| RamsesV3Factory | `0xE0c4ceb92d08CA985bB70fe0a22fEb121A9854A8` |
+| RamsesV3PoolDeployer | `0x4b37359BF291AbE8453692DB58d515a8b013Dca9` (the factory's `ramsesV3PoolDeployer()`, and `deployer()` on the router and quoter) |
+| SwapRouter | `0xFCBBe2Af83F94e7E2a9C35a535B3A04719aFD2Ae` (`WETH9()` is Holbric's WETH) |
+| QuoterV2 | `0x4730e03EB4a58A5e20244062D5f9A99bCf5770a6` (`WETH9()` is Holbric's WETH) |
+
+- **Routing.** `quote_swap`, `find_route` and `prepare_swap` read Ramses pools from the factory at every enabled tick spacing (1, 5, 10, 50, 100, 200, 500), direct or 2 hops through WETH, USDG and cbBTC, and quote each path with the Ramses QuoterV2. Venue `best` and `native` compare them with Uniswap v3 and v4 (and `best` with KyberSwap); `ramses` limits the search to Ramses.
+- **Fees can change.** Each Ramses pool's fee is set by Ramses governance and can differ from the tick spacing's starting fee, so Holbric reads it from the pool at the quote's block. The quote and the simulation are what count.
+- **Swaps.** An exact approval to the Ramses SwapRouter when needed, then `exactInputSingle` or `exactInput` (deadline 15 minutes). Native ETH goes in as value; for native ETH out the router keeps the WETH and `unwrapWETH9` pays the wallet, in one `multicall`. Simulated on mainnet and re-checked by `execute_prepared` like every other swap.
+- **`ramses_pools`** lists a pair's Ramses pools: address, tick spacing, current fee, in-range liquidity, tick and price at one block.
 
 ### Spend history (not released yet)
 

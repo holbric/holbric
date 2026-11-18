@@ -103,18 +103,21 @@ export function describe(r) {
   return s;
 }
 function legLabel(r, i) {
+  if (r.venue === "ramses") return `Ramses ${pct(r.fees[i])}`;
   if (r.venue !== "v4") return pct(r.fees[i]);
   return r.kinds?.[i] === "pons" ? "v4 Pons" : `v4 ${pct(r.fees[i])}`;
 }
-export const feeText = (r) => r.fees.map((f, i) => (r.venue === "v4" && r.kinds?.[i] === "pons" ? "Pons hook fee (LP fee 0%)" : pct(f))).join(" + ");
+export const feeText = (r) => r.fees.map((f, i) => (r.venue === "v4" && r.kinds?.[i] === "pons" ? "Pons hook fee (LP fee 0%)" : r.venue === "ramses" ? `${pct(f)} (Ramses, tick spacing ${r.tickSpacings[i]})` : pct(f))).join(" + ");
+export const venueLabel = (r) => (r.venue === "v4" ? "Uniswap v4" : r.venue === "ramses" ? "Ramses V3" : "Uniswap v3");
 
 /** Plain view of one route for tool output. */
 export function routeView(r, tOut, best) {
   const diff = best && best !== r && best.amountOut > 0n ? Number(formatUnits((r.amountOut - best.amountOut) * 1000000n / best.amountOut, 4)) : 0;
   return {
-    venue: r.venue === "v4" ? "Uniswap v4" : "Uniswap v3",
+    venue: venueLabel(r),
     route: describe(r), hops: r.hops, fees: r.fees.map((f, i) => (r.venue === "v4" && r.kinds?.[i] === "pons" ? "Pons hook" : pct(f))), tokens: r.tokens,
     ...(r.venue === "v4" ? { poolIds: r.pools, poolKeys: r.keys } : { pools: r.pools }),
+    ...(r.venue === "ramses" ? { tickSpacings: r.tickSpacings } : {}),
     amountOut: fmt(r.amountOut, tOut.decimals, 18), amountOutRaw: r.amountOut.toString(), gasEstimate: r.gasEstimate.toString(),
     ...(best && best !== r ? { vsBestPct: +diff.toFixed(4) } : {}),
   };

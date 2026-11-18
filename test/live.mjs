@@ -30,7 +30,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 49 (got ${tools.tools.length})`, tools.tools.length === 49);
+check(`tool count is 50 (got ${tools.tools.length})`, tools.tools.length === 50);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -194,7 +194,7 @@ await pause();
 const qk = JSON.parse(await call("quote_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }));
 check("quote_swap venue kyber answers from KyberSwap only", qk.bestVenue === "KyberSwap" && qk.holbricNative?.status === "no route" && BigInt(qk.tokenOut.amountOutRaw) > 0n);
 const qn = JSON.parse(await call("quote_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "native" }));
-check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status === "not asked" && qn.bestVenue.startsWith("Uniswap"));
+check(`quote_swap venue native does not ask KyberSwap (best: ${qn.bestVenue})`, qn.kyberswap?.status === "not asked" && ["Uniswap v3", "Uniswap v4", "Ramses V3"].includes(qn.bestVenue));
 // In-process: the opt-out and the failure fallback. fetch is wrapped to count and, where needed, break KyberSwap requests.
 {
   const { bestQuote } = await import("../src/swap.js");
@@ -572,6 +572,55 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
   H.spendHistory({ format: "csv" });
   globalThis.fetch = realFetch;
   check("spend_history makes no network call", calls === 0);
+}
+// ---- Ramses V3 (after 0.10.0, unreleased): addresses as published by Ramses for Robinhood, checked on chain ------------
+{
+  const { getAddress, parseAbi } = await import("viem");
+  const { publicClient: pc, ADDR } = await import("../src/chain.js");
+  const { sourcify } = await import("../src/tokeninfo.js");
+  const R = await import("../src/ramses.js");
+  const c = pc();
+  for (const [a, name] of [[R.RAMSES.FACTORY, "RamsesV3Factory"], [R.RAMSES.POOL_DEPLOYER, "RamsesV3PoolDeployer"], [R.RAMSES.SWAP_ROUTER, "SwapRouter"], [R.RAMSES.QUOTER_V2, "QuoterV2"]]) {
+    const code = await c.getCode({ address: a });
+    const sf = await sourcify(a);
+    check(`Ramses ${name} ${a} has code and is verified on Sourcify (${sf.match} ${sf.contractName})`, code && code.length > 2 && ["match", "exact_match"].includes(sf.match) && sf.contractName === name);
+  }
+  const dep = await c.readContract({ address: R.RAMSES.FACTORY, abi: R.factoryAbi, functionName: "ramsesV3PoolDeployer" });
+  const rDep = await c.readContract({ address: R.RAMSES.SWAP_ROUTER, abi: R.routerAbi, functionName: "deployer" });
+  const qDep = await c.readContract({ address: R.RAMSES.QUOTER_V2, abi: R.routerAbi, functionName: "deployer" });
+  check("Ramses factory, SwapRouter and QuoterV2 all point at the same pool deployer", getAddress(dep) === R.RAMSES.POOL_DEPLOYER && getAddress(rDep) === R.RAMSES.POOL_DEPLOYER && getAddress(qDep) === R.RAMSES.POOL_DEPLOYER);
+  const [rWeth, qWeth] = await Promise.all([R.RAMSES.SWAP_ROUTER, R.RAMSES.QUOTER_V2].map((a) => c.readContract({ address: a, abi: R.routerAbi, functionName: "WETH9" })));
+  check("Ramses SwapRouter and QuoterV2 use Holbric's WETH", getAddress(rWeth) === ADDR.WETH && getAddress(qWeth) === ADDR.WETH);
+  const probe = [1, 5, 10, 20, 50, 60, 100, 200, 500, 1000, 2000];
+  const enabled = [];
+  for (const ts of probe) if ((await c.readContract({ address: R.RAMSES.FACTORY, abi: R.factoryAbi, functionName: "tickSpacingInitialFee", args: [ts] })) > 0) enabled.push(ts);
+  check(`enabled Ramses tick spacings match Holbric's list (${enabled.join(", ")})`, enabled.join() === R.TICK_SPACINGS.join());
+  const pools = await R.ramsesLivePools(ADDR.WETH, ADDR.USDG);
+  check(`Ramses has live WETH/USDG pools (${pools.map((p) => `ts ${p.tickSpacing} fee ${p.fee / 10000}%`).join(", ")})`, pools.length >= 1);
+  const p0 = pools[0];
+  const [pf, pts] = await Promise.all([c.readContract({ address: p0.pool, abi: R.poolAbi, functionName: "factory" }), c.readContract({ address: p0.pool, abi: R.poolAbi, functionName: "tickSpacing" })]);
+  check("that pool's factory() is the Ramses factory and its tickSpacing() matches", getAddress(pf) === R.RAMSES.FACTORY && Number(pts) === p0.tickSpacing);
+  // Holbric's quote against an independent single-pool quote on the same pool.
+  const single = [{ type: "function", name: "quoteExactInputSingle", stateMutability: "nonpayable", inputs: [{ name: "params", type: "tuple", components: [{ name: "tokenIn", type: "address" }, { name: "tokenOut", type: "address" }, { name: "amountIn", type: "uint256" }, { name: "tickSpacing", type: "int24" }, { name: "sqrtPriceLimitX96", type: "uint160" }] }], outputs: [{ name: "amountOut", type: "uint256" }, { name: "sqrtPriceX96After", type: "uint160" }, { name: "initializedTicksCrossed", type: "uint32" }, { name: "gasEstimate", type: "uint256" }] }];
+  const rq = JSON.parse(await call("quote_swap", { tokenIn: "WETH", tokenOut: "USDG", amount: "0.02", venue: "ramses" }));
+  check(`quote_swap venue ramses: ${rq.route} = ${rq.tokenOut.amountOut} USDG`, rq.bestVenue === "Ramses V3" && /Ramses/.test(rq.route) && rq.compared.ramsesRoutes >= 1 && rq.compared.v3Routes === 0);
+  {
+    // Path encoding: Holbric's path through quoteExactInput must equal quoteExactInputSingle on the same pool at one block.
+    const multi = [{ type: "function", name: "quoteExactInput", stateMutability: "nonpayable", inputs: [{ name: "path", type: "bytes" }, { name: "amountIn", type: "uint256" }], outputs: [{ name: "amountOut", type: "uint256" }, { name: "a", type: "uint160[]" }, { name: "b", type: "uint32[]" }, { name: "g", type: "uint256" }] }];
+    const B = await c.getBlockNumber(), amt = 20000000000000000n, ts = p0.tickSpacing;
+    const [{ result: s1 }, { result: m1 }] = await Promise.all([
+      c.simulateContract({ address: R.RAMSES.QUOTER_V2, abi: single, functionName: "quoteExactInputSingle", args: [{ tokenIn: ADDR.WETH, tokenOut: ADDR.USDG, amountIn: amt, tickSpacing: ts, sqrtPriceLimitX96: 0n }], blockNumber: B }),
+      c.simulateContract({ address: R.RAMSES.QUOTER_V2, abi: multi, functionName: "quoteExactInput", args: [R.encodeRamsesPath([ADDR.WETH, ADDR.USDG], [ts]), amt], blockNumber: B }),
+    ]);
+    check(`Holbric's Ramses path quotes exactly like quoteExactInputSingle at block ${B} (${s1[0]})`, s1[0] === m1[0] && s1[0] > 0n);
+    const viaMcp = BigInt(rq.tokenOut.amountOutRaw), ref = s1[0] > viaMcp ? s1[0] : viaMcp, gap = Number(((ref - (s1[0] < viaMcp ? s1[0] : viaMcp)) * 1000000n) / ref) / 10000;
+    check(`quote_swap's Ramses figure is within 0.5% of that reference a few blocks apart (${gap}%)`, rq.tickSpacings[0] !== ts || gap <= 0.5);
+  }
+  const bq = JSON.parse(await call("quote_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.02", venue: "native" }));
+  check(`venue native compares Uniswap v3, v4 and Ramses V3 (${bq.compared.v3Routes} + ${bq.compared.v4Routes} + ${bq.compared.ramsesRoutes} routes, best ${bq.bestVenue})`, bq.compared.v3Routes > 0 && bq.compared.v4Routes > 0 && bq.compared.ramsesRoutes > 0);
+  const rp = JSON.parse(await call("ramses_pools", { tokenA: "WETH", tokenB: "USDG" }));
+  check(`ramses_pools lists WETH/USDG pools with fee, tick spacing and price (${rp.pools.length})`, rp.pools.some((p) => p.inRange && p.price && p.feePct > 0));
+  check("Ramses path encoding is token + 3-byte tick spacing + token", R.encodeRamsesPath([ADDR.WETH, ADDR.USDG], [5]).toLowerCase() === ("0x" + ADDR.WETH.slice(2) + "000005" + ADDR.USDG.slice(2)).toLowerCase());
 }
 await client.close();
 console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);
