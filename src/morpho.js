@@ -1,4 +1,5 @@
 // Morpho on Robinhood Chain mainnet (0.7.0). Read-only: nothing here builds, signs or sends a transaction.
+// Writes (supply, borrow, repay, withdraw; 0.10.0) are built in morphotx.js on top of these reads.
 //
 // Addresses come from Morpho's own address registry (github.com/morpho-org/sdks, packages/morpho-ts/src/addresses.ts,
 // ChainId.RobinhoodMainnet = 4663). Each one has code on chain and is verified on Sourcify for chain 4663 ("match":
@@ -83,8 +84,8 @@ export async function multi(contracts, blockNumber) {
 const val = (r) => (r && r.status === "success" ? r.result : null);
 const mulDivDown = (x, y, d) => (x * y) / d;
 const mulDivUp = (x, y, d) => (x * y + (d - 1n)) / d;
-const toAssetsDown = (shares, ta, ts) => mulDivDown(shares, ta + VIRTUAL_ASSETS, ts + VIRTUAL_SHARES);
-const toAssetsUp = (shares, ta, ts) => mulDivUp(shares, ta + VIRTUAL_ASSETS, ts + VIRTUAL_SHARES);
+export const toAssetsDown = (shares, ta, ts) => mulDivDown(shares, ta + VIRTUAL_ASSETS, ts + VIRTUAL_SHARES);
+export const toAssetsUp = (shares, ta, ts) => mulDivUp(shares, ta + VIRTUAL_ASSETS, ts + VIRTUAL_SHARES);
 const toSharesDown = (assets, ta, ts) => mulDivDown(assets, ts + VIRTUAL_SHARES, ta + VIRTUAL_ASSETS);
 const wMulDown = (x, y) => (x * y) / WAD;
 /** Morpho Blue's MathLib.wTaylorCompounded: e^(x*n) - 1, three terms. */
@@ -181,7 +182,7 @@ export async function unitUsd(meta) {
 
 // ---- market math (on chain, one block) --------------------------------------------------------------------------------
 /** Market totals with interest accrued up to `timestamp`, the borrow rate, and APYs, as Morpho Blue computes them. */
-function accrue(params, m, rate, timestamp) {
+export function accrue(params, m, rate, timestamp) {
   let { totalSupplyAssets: tsa, totalSupplyShares: tss, totalBorrowAssets: tba, totalBorrowShares: tbs, lastUpdate, fee } = m;
   const elapsed = BigInt(timestamp) - BigInt(lastUpdate);
   if (elapsed > 0n && tba > 0n && !isZero(params.irm) && rate != null) {
@@ -201,7 +202,7 @@ const M_FIELDS = ["totalSupplyAssets", "totalSupplyShares", "totalBorrowAssets",
 const asMarket = (r) => Object.fromEntries(M_FIELDS.map((k, i) => [k, r[i]]));
 
 /** Full on-chain state for a set of market ids at one block: totals (accrued), rate, APYs, oracle price. */
-async function marketStates(list, block) {
+export async function marketStates(list, block) {
   const raw = await multi(list.map((x) => ({ address: MORPHO, abi: morphoAbi, functionName: "market", args: [x.id] })), block.number);
   const markets = raw.map((r) => (val(r) ? asMarket(val(r)) : null));
   const rateCalls = list.map((x, i) => (markets[i] && !isZero(x.params.irm)
@@ -220,7 +221,7 @@ async function marketStates(list, block) {
   });
 }
 /** Oracle price as "loan per 1 collateral" in whole units (Morpho oracles scale price by 1e36 * 10^(loanDec - collDec)). */
-const humanPrice = (p, loanDec, collDec) => (p == null ? null : Number(formatUnits(p, 36 + loanDec - collDec)));
+export const humanPrice = (p, loanDec, collDec) => (p == null ? null : Number(formatUnits(p, 36 + loanDec - collDec)));
 
 function marketView(s, loan, coll, api, usdPerLoan) {
   const { tsa, tba, fee } = s.acc;

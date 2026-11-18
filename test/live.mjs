@@ -4,6 +4,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generatePrivateKey } from "viem/accounts";
 
 const home = process.env.HOLBRIC_HOME || mkdtempSync(join(tmpdir(), "holbric-test-"));
@@ -11,7 +12,7 @@ process.env.HOLBRIC_HOME = home;
 const { writeKeystore, keystoreExists } = await import("../src/keystore.js");
 if (!keystoreExists()) writeKeystore(generatePrivateKey(), "test-passphrase-not-used");
 
-const transport = new StdioClientTransport({ command: process.execPath, args: [new URL("../bin/holbric.js", import.meta.url).pathname, "mcp"], env: { ...process.env, HOLBRIC_HOME: home } });
+const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL("../bin/holbric.js", import.meta.url)), "mcp"], env: { ...process.env, HOLBRIC_HOME: home } });
 const client = new Client({ name: "holbric-live-test", version: "0.0.0" });
 await client.connect(transport);
 const tools = await client.listTools();
@@ -29,7 +30,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 42 (got ${tools.tools.length})`, tools.tools.length === 42);
+check(`tool count is 48 (got ${tools.tools.length})`, tools.tools.length === 48);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -145,6 +146,17 @@ await call("prepare_add_liquidity", { tokenA: "ETH", tokenB: "USDG", amountA: "0
 await call("prepare_remove_liquidity", { tokenId: "1" }, /owned by|Not enough|no ETH|Fund it|not a current/);
 await call("prepare_collect_lp_fees", { tokenId: "1" }, /owned by|Not enough|no ETH|Fund it|not a current/);
 await call("execute_prepared", { prepareId: "hp_doesnotexist", confirm: true }, /Unknown or expired prepareId/);
+// 0.10.0: Morpho writes and ERC-8004 feedback, from the empty test wallet.
+const NVDA_USDG_LISTED = "0xf5ff7d546af5e72f3912d2aa723088fd0bf66fddc158714995637714d9db6e4c";
+await call("prepare_morpho_supply", { marketId: NVDA_USDG_LISTED, amount: "5" }, EMPTY);
+await call("prepare_morpho_borrow", { marketId: NVDA_USDG_LISTED, amount: "5" }, /no NVDA collateral/);
+await call("prepare_morpho_borrow", { marketId: NVDA_USDG_LISTED, amount: "5", collateralAmount: "1" }, EMPTY);
+await call("prepare_morpho_repay", { marketId: NVDA_USDG_LISTED, all: true }, /no USDG debt/);
+await call("prepare_morpho_withdraw", { marketId: NVDA_USDG_LISTED, what: "collateral", all: true }, /no NVDA collateral/);
+await call("prepare_morpho_supply", { marketId: "0x1234", amount: "5" }, /32-byte Morpho market id/);
+await call("prepare_agent_feedback", { agentId: 1, value: "5" }, EMPTY);
+await call("prepare_agent_feedback", { agentId: 1, value: "1e5" }, /value must be a number/);
+await call("prepare_revoke_feedback", { agentId: 1, feedbackIndex: 1 }, /there is no number 1/);
 await call("prepare_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }, EMPTY);
 await call("prepare_swap", { tokenIn: "USDG", tokenOut: "ETH", amount: "5", venue: "best" }, EMPTY);
 
@@ -459,6 +471,24 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
   try { await R.bridgeQuote({ toChain: "base", token: "ETH", amount: "0.01" }); } catch (e) { msg = e.message; }
   globalThis.fetch = realFetch;
   check(`Relay API down: bridge_quote says so (${msg})`, /Relay API unreachable/.test(msg));
+}
+// ---- 0.10.0: contracts behind the new writes ----------------------------------------------------------------------------
+{
+  const { getAddress, parseAbi } = await import("viem");
+  const { publicClient: pc, ADDR } = await import("../src/chain.js");
+  const { sourcify } = await import("../src/tokeninfo.js");
+  const c = pc();
+  const SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"; // EIP-1967 implementation slot
+  for (const [proxy, name] of [[ADDR.ERC8004_REPUTATION, "ReputationRegistryUpgradeable"], [ADDR.ERC8004_IDENTITY, "IdentityRegistryUpgradeable"]]) {
+    const impl = getAddress("0x" + (await c.getStorageAt({ address: proxy, slot: SLOT })).slice(26));
+    const sf = await sourcify(impl);
+    check(`ERC-8004 proxy ${proxy} points to ${impl}, verified on Sourcify as ${sf.contractName} (${sf.match})`, sf.match === "exact_match" && sf.contractName === name);
+  }
+  const idReg = await c.readContract({ address: ADDR.ERC8004_REPUTATION, abi: parseAbi(["function getIdentityRegistry() view returns (address)"]), functionName: "getIdentityRegistry" });
+  check("the reputation registry's identity registry is the one Holbric uses", getAddress(idReg) === ADDR.ERC8004_IDENTITY);
+  const M = await import("../src/morpho.js");
+  const sm = await sourcify(M.MORPHO);
+  check(`Morpho Blue ${M.MORPHO}, the only contract the Morpho writes call, is verified on Sourcify as Morpho (${sm.match})`, ["match", "exact_match"].includes(sm.match) && sm.contractName === "Morpho");
 }
 await client.close();
 console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);

@@ -242,5 +242,29 @@
    }
   ],
   "stateMutability": "view"
+ },
+ {
+  "name": "isAuthorizedOrOwner",
+  "type": "function",
+  "inputs": [
+   {
+    "name": "spender",
+    "type": "address",
+    "internalType": "address"
+   },
+   {
+    "name": "agentId",
+    "type": "uint256",
+    "internalType": "uint256"
+   }
+  ],
+  "outputs": [
+   {
+    "name": "",
+    "type": "bool",
+    "internalType": "bool"
+   }
+  ],
+  "stateMutability": "view"
  }
 ]

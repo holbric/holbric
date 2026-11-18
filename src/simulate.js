@@ -141,8 +141,10 @@ const human = (token, v) => { const m = meta.get(token) || { symbol: token, deci
  * Compare a fresh simulation with the one shown to the user. Returns null when it is safe to sign, otherwise a reason.
  * Refuses when: any step now reverts; ETH or tokens would leave the wallet to an address that was not in the preview;
  * more would leave than previewed; a new approval appears; or what the wallet receives fell by more than the slippage limit.
+ * outflowSlackBps (default 0) lets an outflow grow by that many basis points over the preview. Only a Morpho full repay uses
+ * it, because interest keeps accruing between prepare and signing; the exact approval still caps what can be pulled.
  */
-export function compareSims(before, after, slippageBps) {
+export function compareSims(before, after, slippageBps, outflowSlackBps = 0) {
   const failed = after.steps.find((s) => s.status === "failure");
   if (failed) return `the simulation now reverts at "${failed.step}" (${failed.error || "reverted"})`;
   if (!before._raw || !after._raw) return null;
@@ -150,7 +152,7 @@ export function compareSims(before, after, slippageBps) {
     const [token, to] = k.split(">");
     const was = before._raw.outflows.get(k);
     if (was == null) return `an unexpected transfer of ${human(token, v)} from the wallet to ${to} appeared that was not in the preview`;
-    if (v > was) return `${human(token, v)} would now leave the wallet to ${to}, more than the ${human(token, was)} in the preview`;
+    if (v > (was * BigInt(10000 + outflowSlackBps)) / 10000n) return `${human(token, v)} would now leave the wallet to ${to}, more than the ${human(token, was)} in the preview`;
   }
   for (const k of after._raw.approvals.keys())
     if (!before._raw.approvals.has(k)) { const [token, spender] = k.split(">"); return `an unexpected approval of ${meta.get(token)?.symbol || token} for ${spender} appeared that was not in the preview`; }

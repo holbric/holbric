@@ -2,7 +2,7 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.9.0 covers 9 projects with 42 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.10.0 covers 9 projects with 48 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
@@ -10,14 +10,14 @@ Version 0.9.0 covers 9 projects with 42 tools. Every integration below was teste
 | Uniswap v3 and v4 | Find the best route across v3 and v4 (direct pools, or 2 hops through WETH, ETH, USDG or cbBTC), quote it, and swap; list v4 pools for a pair and quote on v4 alone; read Uniswap v4 liquidity positions and quote or prepare adding, removing and collecting fees | `quote_swap`, `find_route`, `prepare_swap`, `v4_pools`, `quote_v4`, `lp_positions`, `quote_add_liquidity`, `prepare_add_liquidity`, `quote_remove_liquidity`, `prepare_remove_liquidity`, `quote_collect_lp_fees`, `prepare_collect_lp_fees` |
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
-| ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
+| ERC-8004 | Look up agent identities and reputation, register an agent, give feedback to an agent and revoke it | `agent_identity`, `agent_reputation`, `prepare_register_agent`, `prepare_agent_feedback`, `prepare_revoke_feedback` |
 | KyberSwap aggregator | Holbric's own route against KyberSwap's for the same swap, side by side at one block. KyberSwap's output only counts after its router call is simulated on mainnet. `quote_swap`, `find_route` and `prepare_swap` use it too | `compare_quotes` |
 | Relay bridge | Quote ETH and stablecoin bridges between Robinhood Chain and Ethereum, Base, Arbitrum One, OP Mainnet or Unichain (both directions), bridge out of Robinhood Chain with a checked and simulated deposit, and follow a bridge by request id or hash | `bridge_quote`, `prepare_bridge`, `bridge_status` |
-| Morpho | Read lending markets (rates, utilization, liquidity, oracle price), any address's positions with health factor and liquidation price, and Vault V2 vaults. Read-only | `morpho_markets`, `morpho_position`, `morpho_vaults` |
+| Morpho | Read lending markets (rates, utilization, liquidity, oracle price), any address's positions with health factor and liquidation price, and Vault V2 vaults; supply, borrow (with collateral in the same action), repay and withdraw on Morpho Blue | `morpho_markets`, `morpho_position`, `morpho_vaults`, `prepare_morpho_supply`, `prepare_morpho_borrow`, `prepare_morpho_repay`, `prepare_morpho_withdraw` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 9, Uniswap 12, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, Relay 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 9, Uniswap 12, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 5, KyberSwap 1, Morpho 7, Relay 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -48,11 +48,13 @@ Holbric is built around three rules:
 
 ## Install
 
-Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
+Node.js 22.12.0 or newer is required.
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.9.0/holbric-0.9.0.tgz
-# or
+npm install -g holbric
+# or from the GitHub release tarball
+npm install -g https://github.com/holbric/holbric/releases/download/v0.10.0/holbric-0.10.0.tgz
+# or from this repository
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
 holbric --version
@@ -193,7 +195,7 @@ Relay (relay.link) runs a bridge with Robinhood Chain (chain id 4663) as a suppo
 - **Privacy.** Relay is a third-party API. `bridge_quote` sends the chains, the tokens and the amount, and asks for a placeholder address, not your wallet. `prepare_bridge` sends your wallet address (sender and refund address) and the recipient. `bridge_status` sends the id or hash you ask about. To turn Relay off, set `HOLBRIC_NO_BRIDGES=1` in the MCP server's environment or run `holbric bridges off`; the bridge tools then refuse and nothing is sent. `chain_status` shows the setting. `HOLBRIC_NO_AGGREGATORS` only covers KyberSwap.
 - **No fees.** Relay's own fees are inside its quote and shown. Holbric adds none and sends no app fee or referrer.
 
-### Morpho (read-only)
+### Morpho
 
 Addresses come from Morpho's own registry, [`packages/morpho-ts/src/addresses.ts`](https://github.com/morpho-org/sdks/blob/main/packages/morpho-ts/src/addresses.ts) in morpho-org/sdks. Morpho Blue, the AdaptiveCurveIrm and the VaultV2Factory each have code on chain and are verified on Sourcify. The registry lists no MetaMorpho (vault V1) factory for chain 4663; vaults here are Morpho Vault V2.
 
@@ -203,6 +205,13 @@ Addresses come from Morpho's own registry, [`packages/morpho-ts/src/addresses.ts
 - **Morpho's API** is used only for whether Morpho's app lists a market (`morpho_markets` shows listed markets by default) and for vault APY. Both are labelled. If it is down, `morpho_markets` shows only markets whose tokens are all WETH, USDG, cbBTC or official stock tokens, and `morpho_vaults` shows no APY.
 - **Partial reads are refused.** Failed batches are retried twice at the same block. If a read still fails, the tool says so rather than return a partial list.
 
+**Writes (0.10.0).** `prepare_morpho_supply`, `prepare_morpho_borrow`, `prepare_morpho_repay` and `prepare_morpho_withdraw` call Morpho Blue directly (`supply`, `supplyCollateral` then `borrow`, `repay`, `withdraw` / `withdrawCollateral`, with signatures from its verified source). There is no bundler, no callback data and no authorization: every call acts for your wallet and pays your wallet. Each one is simulated on mainnet and re-simulated by `execute_prepared`.
+
+- **Listed markets only.** Supply and borrow are refused on markets Morpho's app does not list, unless you explicitly pass `allowUnlisted: true`; the summary then carries a warning. If Morpho's API is down, only markets whose tokens are all WETH, USDG, cbBTC or official stock tokens are allowed. Repay and withdraw work on any market you are already in.
+- **Health margin.** A borrow, or a collateral withdrawal while in debt, is refused if the health factor afterwards would be under 1.10 at the market oracle (Morpho itself stops at 1.00). The check is read again right before signing. The summary shows the health factor after, the liquidation price and how far it is from the oracle price now.
+- **Exact approvals.** Supply, collateral and partial repay approve exactly the amount. A full repay (`all: true`) repays by shares so no interest dust is left: it approves the debt plus at most 15 minutes of interest, then sets the allowance back to 0 in the same action. Interest accrues between prepare and signing, so the re-check lets that payment grow by up to 0.05%; the approval still caps it.
+- **Liquidity.** A borrow or a supply withdrawal larger than the market's free liquidity is refused before simulation, and the liquidity is shown.
+
 ### Portfolio
 
 `portfolio` checks ETH, WETH, USDG, cbBTC, every official Robinhood Stock Token, the tokens you name, and tokens that reached the address in the last 24 hours (Transfer logs, up to 72; the public RPC allows 30,000 blocks per log request without an address). It adds the address's Morpho positions and Vault V2 shares, with debt as negative.
@@ -210,6 +219,10 @@ Addresses come from Morpho's own registry, [`packages/morpho-ts/src/addresses.ts
 Prices are Holbric's own best Uniswap v3/v4 quote into USDG for a small amount (1 token, or about $100 worth when 1 token is worth more). ETH and WETH use a 1 ETH quote. Pons V2 tokens still on their curve are quoted on the curve. A second, full-size quote gives the sell-everything-now value, so a thin pool shows up as a gap between the two totals. No price feed or aggregator API is asked. Tokens outside Holbric's lists are listed, not valued, unless you name them.
 
 There is no PnL. An honest one needs the price of every token at every past transfer. The public RPC keeps no historical state, and Holbric will not guess a cost basis.
+
+### ERC-8004 feedback
+
+`prepare_agent_feedback` calls `giveFeedback` on the reputation registry `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` (a proxy; implementation `0x16e0FA7f7C56B9a767E34B192B51f921BE31dA34`, exact match on Sourcify as ReputationRegistryUpgradeable; its `getIdentityRegistry()` is the identity registry Holbric uses). The value is a decimal such as `5`, `4.5` or `-1` (up to 18 decimals, at most 1e38 in absolute value), with optional tags, an endpoint, an https or ipfs feedbackURI and a 32-byte hash. The registry refuses feedback from an agent's owner or operators; Holbric checks `isAuthorizedOrOwner` first and says so. Feedback is public, permanent and tied to your wallet. `prepare_revoke_feedback` marks one of your entries as revoked: it stays on chain, and summaries stop counting it.
 
 ### Pons creator fees
 
@@ -222,9 +235,11 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 ```sh
 npm test                           # both suites below. Never signs.
 node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout,
-                                   # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, Morpho markets, positions and vaults
+                                   # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, Morpho markets, positions and vaults,
+                                   # the ERC-8004 and Morpho contracts on Sourcify
                                    # checked against raw reads, portfolio totals, prepare refusals, Relay quotes, order checks, bridge status and the opt-out
-node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps and Relay deposits included) with a throwaway wallet, simulates it on mainnet,
+node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps, Relay deposits, Morpho supply and borrow, ERC-8004 feedback) with a throwaway wallet,
+                                   # simulates it on mainnet; Morpho repay and withdraw are simulated from real public positions;
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
 

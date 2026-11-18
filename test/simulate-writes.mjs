@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generatePrivateKey } from "viem/accounts";
-import { parseEther, encodeFunctionData, parseAbi } from "viem";
+import { parseEther, encodeFunctionData, parseAbi, getAddress, formatUnits, parseUnits } from "viem";
 process.env.HOLBRIC_HOME = mkdtempSync(join(tmpdir(), "holbric-sim-"));
 const { writeKeystore } = await import("../src/keystore.js");
 const me = writeKeystore(generatePrivateKey(), "sim-only-passphrase");
@@ -30,14 +30,17 @@ const AMZN = "0x12f190a9F9d7D37a250758b26824B97CE941bF54"; // official Robinhood
 const BMNR = "0x9a7842EDed60b0FE1e03eEc342C82A397c821eD0"; // official Robinhood Stock Token, no USDG pool on Uniswap v3
 const ORBIT = "0xF1A947c6C7b8887ef6C09b8B088787b4d1fF8d0a"; // Pons V2 launch, graduated (phase 2) to a Uniswap v4 pool with the Pons hook
 const DUMMY_SPENDER = "0x000000000000000000000000000000000000bEEF";
+const fmtU = (v) => formatUnits(v, 6), parseUnitsU = (s) => parseUnits(s, 6);
 
 const c = publicClient();
 const BIG = 10n ** 30n;
 const realGetBalance = c.getBalance.bind(c), realRead = c.readContract.bind(c);
 c.getBalance = async (a) => (a.address === me ? parseEther("5") : realGetBalance(a));
-c.readContract = async (a) => (a.functionName === "balanceOf" && a.args?.[0] === me && !a.stateOverride && a.address !== ADDR.ERC8004_IDENTITY && a.address !== ADDR.PONS_ESCROW ? BIG : realRead(a));
+const RICH = new Set([me]); // addresses whose ERC-20 balance reads are pretended: the throwaway wallet, plus a public Morpho borrower below
+c.readContract = async (a) => (a.functionName === "balanceOf" && RICH.has(a.args?.[0]) && !a.stateOverride && a.address !== ADDR.ERC8004_IDENTITY && a.address !== ADDR.PONS_ESCROW ? BIG : realRead(a));
 // Pretend balances for the throwaway wallet only, inside the simulation. Allowances stay real (zero), so approvals are exercised.
-const pretend = [[ADDR.USDG, 10n ** 12n], [ADDR.WETH, parseEther("1")], [HOLBRIC, 2n * 10n ** 24n], [AMZN, parseEther("1")], [ORBIT, 10n ** 24n]];
+const NVDA = "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC"; // official Robinhood Stock Token, collateral in Morpho NVDA/USDG markets
+const pretend = [[ADDR.USDG, 10n ** 12n], [ADDR.WETH, parseEther("1")], [HOLBRIC, 2n * 10n ** 24n], [AMZN, parseEther("1")], [ORBIT, 10n ** 24n], [NVDA, parseEther("10")]];
 const pretendOverrides = (await Promise.all(pretend.map(([t, amt]) => tokenOverride(t, me, DUMMY_SPENDER, amt)))).filter(Boolean);
 _setSimOverrides(async (from) => (from === me ? [{ address: me, balance: parseEther("5") }, ...pretendOverrides] : undefined));
 
@@ -317,6 +320,126 @@ const expectWeth = (BigInt(remQ.principalOut.token0Raw) + BigInt(remQ.uncollecte
 ok("simulated burn of position 2 pays the quoted WETH principal plus fees to the wei",
   burnSim.ok && burnWeth && burnWeth.raw === expectWeth,
   burnWeth ? `${burnWeth.change} WETH, quoted ${expectWeth}` : burnSim.steps[0]?.error);
+
+// ---- Morpho Blue writes (0.10.0). Supply and borrow run as the throwaway wallet with pretend balances. Repay and withdraw
+// are planned with Holbric's own code for real public positions found from Morpho's Borrow/Supply logs, then simulated
+// from those addresses (eth_simulateV1 needs no signature). Nothing is signed or sent.
+{
+  const MT = await import("../src/morphotx.js");
+  const M = await import("../src/morpho.js");
+  const { compareSims } = await import("../src/simulate.js");
+  const { parseAbiItem } = await import("viem");
+  const MORPHO = M.MORPHO;
+  const NVDA_USDG = "0xf5ff7d546af5e72f3912d2aa723088fd0bf66fddc158714995637714d9db6e4c"; // NVDA collateral / USDG loan, LLTV 62.5%, listed in Morpho's app
+  const outTo = (r, sym) => r?.simulation.transfersOut.filter((o) => o.counterparty === MORPHO && o.symbol === sym).reduce((a, o) => a + BigInt(o.raw), 0n) ?? 0n;
+  const stepsText = (s) => s.steps.map((t) => `${t.step}: ${t.status}${t.error ? " " + t.error : ""}`).join(" | ");
+  const sup = await run("Morpho supply 5 USDG to the NVDA/USDG market", () => MT.prepareMorphoSupply({ marketId: NVDA_USDG, amount: "5" }));
+  if (sup) ok("Morpho supply: exactly 5 USDG goes to Morpho Blue, with an exact 5 USDG approval",
+    outTo(sup, "USDG") === 5_000_000n && sup.simulation.approvals.length === 1 && sup.simulation.approvals[0].spender === MORPHO && sup.simulation.approvals[0].raw === "5000000" && /listed in Morpho's app/.test(sup.summary),
+    sup.simulation.transfersOut.map((o) => `${o.amount} ${o.symbol} to ${o.counterparty}`).join("; "));
+  const bor = await run("Morpho borrow 20 USDG against 1 NVDA deposited in the same action", () => MT.prepareMorphoBorrow({ marketId: NVDA_USDG, amount: "20", collateralAmount: "1" }));
+  if (bor) {
+    ok("Morpho borrow: 1 NVDA leaves as collateral, exactly 20 USDG arrives, approval is exactly 1 NVDA",
+      outTo(bor, "NVDA") === 10n ** 18n && BigInt(delta(bor, "USDG")?.raw || 0) === 20_000_000n && bor.simulation.approvals.length === 1 && bor.simulation.approvals[0].raw === (10n ** 18n).toString(),
+      bor.simulation.walletDeltas.map((d) => `${d.change} ${d.symbol}`).join(", "));
+    ok(`Morpho borrow: summary shows health factor ${bor.morpho.healthFactorAfter} and the liquidation price`, bor.morpho.healthFactorAfter >= MT.MIN_HEALTH && /Liquidation: if 1 NVDA falls to about [\d.]+ USDG/.test(bor.summary) && /Output check in the simulation/.test(bor.summary));
+    const again = await recheck(_peek(bor.prepareId));
+    ok("Morpho borrow re-check before signing reads the health factor again and passes", again.ok, again.reason || "ok");
+  }
+  await run("Morpho borrow that would leave health under 1.10 is refused", () => MT.prepareMorphoBorrow({ marketId: NVDA_USDG, amount: "95", collateralAmount: "1" }), { expectError: /under Holbric's minimum of 1\.1/ });
+  await run("Morpho borrow with no collateral is refused", () => MT.prepareMorphoBorrow({ marketId: NVDA_USDG, amount: "1" }), { expectError: /no NVDA collateral/ });
+  await run("Morpho repay with no debt is refused", () => MT.prepareMorphoRepay({ marketId: NVDA_USDG, all: true }), { expectError: /no USDG debt/ });
+  await run("Morpho withdraw with nothing supplied is refused", () => MT.prepareMorphoWithdraw({ marketId: NVDA_USDG, all: true }), { expectError: /nothing supplied/ });
+  await run("Morpho bad market id is refused", () => MT.prepareMorphoSupply({ marketId: "0x" + "ab".repeat(32), amount: "1" }), { expectError: /No Morpho Blue market with id/ });
+  const api = await M.morphoApi();
+  const latest = await c.getBlockNumber();
+  const unlisted = (await M.allMarkets(latest)).find((m) => getAddress(m.params.loanToken) === ADDR.USDG && api.listed && api.listed.get(m.id.toLowerCase()) === false);
+  if (unlisted) await run("Morpho supply to a market not listed in Morpho's app is refused", () => MT.prepareMorphoSupply({ marketId: unlisted.id, amount: "1" }), { expectError: /not listed in Morpho's app/ });
+  else ok("found an unlisted USDG market for the refusal test", false, api.error || "none found");
+
+  // Real public positions in the NVDA/USDG market, from Morpho's own Borrow and Supply events (latest 20M blocks).
+  const BORROW = parseAbiItem("event Borrow(bytes32 indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets, uint256 shares)");
+  const SUPPLY = parseAbiItem("event Supply(bytes32 indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares)");
+  const posAbi = parseAbi(["function position(bytes32 id, address user) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)"]);
+  const findHolder = async (event, want) => {
+    for (let to = latest; to > latest - 20_000_000n; to -= 10_000_000n) {
+      const logs = await c.getLogs({ address: MORPHO, event, args: { id: NVDA_USDG }, fromBlock: to - 9_999_999n, toBlock: to });
+      for (const l of logs.reverse()) {
+        const w = l.args.onBehalf; const code = await c.getCode({ address: w });
+        if (code && code !== "0x") continue; // plain accounts only
+        const p = await c.readContract({ address: MORPHO, abi: posAbi, functionName: "position", args: [NVDA_USDG, w] });
+        if (want(p)) return w;
+      }
+    }
+    return null;
+  };
+  const borrower = await findHolder(BORROW, (p) => p[1] > 0n && p[2] > 0n);
+  ok(`found a public borrower in the NVDA/USDG market (${borrower})`, !!borrower);
+  if (borrower) {
+    RICH.add(borrower);
+    const give = [{ address: borrower, balance: parseEther("1") }, await tokenOverride(ADDR.USDG, borrower, DUMMY_SPENDER, 10n ** 15n)];
+    const viewPos = await M.morphoPosition({ address: borrower, marketId: NVDA_USDG });
+    const x = await MT.loadMarket(borrower, NVDA_USDG);
+    const hf = MT.healthFactor(x.pos.collateral, x.pos.borrowed, x.s.oraclePrice, x.m.params.lltv);
+    ok(`health factor math matches morpho_position for the borrower (${hf?.toFixed(4)} vs ${viewPos.positions[0]?.healthFactor})`, Math.abs(hf - viewPos.positions[0].healthFactor) < 0.001);
+    const full = await MT._plan.repay(borrower, { marketId: NVDA_USDG, all: true });
+    const s1 = await simulateTxs(borrower, full.txs, { stateOverrides: give });
+    const paid = s1.transfersOut?.filter((o) => o.counterparty === MORPHO).reduce((a, o) => a + BigInt(o.raw), 0n) ?? 0n;
+    ok(`Morpho full repay for the borrower simulates: pays ${fmtU(paid)} USDG (debt was ${fmtU(x.pos.borrowed)}), allowance ends at 0`,
+      s1.ok && paid >= x.pos.borrowed && paid <= x.pos.borrowed + x.pos.borrowed / 1000n + 1n && s1.approvals.length > 0 && s1.approvals.every((a) => a.raw === "0"), stepsText(s1));
+    const readPos = { label: "read position", to: MORPHO, value: 0n, data: encodeFunctionData({ abi: posAbi, functionName: "position", args: [NVDA_USDG, borrower] }) };
+    const after = await c.simulateBlocks({ blocks: [{ calls: [...full.txs, readPos].map((t) => ({ account: borrower, to: t.to, data: t.data, value: t.value })), stateOverrides: give }], validation: false });
+    const last = after[0].calls.at(-1);
+    const borrowSharesAfter = last.status === "success" ? BigInt("0x" + last.data.slice(2 + 64, 2 + 128)) : -1n;
+    ok(`Morpho full repay leaves zero borrow shares (${borrowSharesAfter})`, borrowSharesAfter === 0n);
+    const s2 = await simulateTxs(borrower, full.txs, { stateOverrides: give });
+    ok("full repay re-check passes with the interest slack", full.outflowSlackBps > 0 && compareSims(s1, s2, 50, full.outflowSlackBps) === null);
+    const grown = { ...s2, _raw: { ...s2._raw, outflows: new Map([...s2._raw.outflows].map(([k, v]) => [k, v + v / 100n])) } };
+    ok("full repay re-check refuses an outflow 1% above the preview", /more than the/.test(compareSims(s1, grown, 50, full.outflowSlackBps) || ""));
+    const half = x.pos.borrowed / 2n;
+    const part = await MT._plan.repay(borrower, { marketId: NVDA_USDG, amount: fmtU(half) });
+    const s3 = await simulateTxs(borrower, part.txs, { stateOverrides: give });
+    ok(`Morpho partial repay of ${fmtU(half)} USDG for the borrower simulates with an exact amount`, s3.ok && s3.transfersOut.some((o) => o.counterparty === MORPHO && BigInt(o.raw) === parseUnitsU(fmtU(half))), stepsText(s3));
+    const tiny = formatUnits(x.pos.collateral / 1000n, x.coll.decimals);
+    const wc = await MT._plan.withdraw(borrower, { marketId: NVDA_USDG, what: "collateral", amount: tiny }).catch((e) => e);
+    if (wc instanceof Error) ok("Morpho collateral withdraw of 0.1% for the borrower is refused only for health", /under Holbric's minimum/.test(wc.message), wc.message);
+    else { const s4 = await simulateTxs(borrower, wc.txs, { stateOverrides: give }); ok("Morpho withdraw of 0.1% of the borrower's collateral simulates and pays NVDA", s4.ok && s4.walletDeltas.some((d) => d.symbol === "NVDA" && !d.change.startsWith("-")), stepsText(s4)); }
+    const wAll = await MT._plan.withdraw(borrower, { marketId: NVDA_USDG, what: "collateral", all: true }).catch((e) => e);
+    ok("Morpho withdraw of all collateral while in debt is refused", wAll instanceof Error && /repay it first/.test(wAll.message), wAll.message);
+    RICH.delete(borrower);
+  }
+  const supplier = await findHolder(SUPPLY, (p) => p[0] > 0n);
+  if (supplier) {
+    const w = await MT._plan.withdraw(supplier, { marketId: NVDA_USDG, all: true }).catch((e) => e);
+    if (w instanceof Error) ok(`Morpho withdraw all for public supplier ${supplier} is refused only for liquidity`, /free liquidity/.test(w.message), w.message);
+    else {
+      const s5 = await simulateTxs(supplier, w.txs, { stateOverrides: [{ address: supplier, balance: parseEther("1") }] });
+      ok(`Morpho withdraw of everything supplied by public supplier ${supplier} simulates and pays USDG`, s5.ok && s5.walletDeltas.some((d) => d.symbol === "USDG" && BigInt(d.raw) >= w.minReceive.amount), stepsText(s5));
+    }
+  } else ok("found a public supplier in the NVDA/USDG market", false);
+}
+
+// ---- ERC-8004 feedback writes (0.10.0) ----------------------------------------------------------------------------------
+{
+  const I = await import("../src/identity.js");
+  const stepsText = (s) => s.steps.map((t) => `${t.step}: ${t.status}${t.error ? " " + t.error : ""}`).join(" | ");
+  const fb = await run("ERC-8004 feedback +5 to agent 1", () => I.prepareAgentFeedback({ agentId: 1, value: "5", tag1: "quality", endpoint: "https://holbric.com" }));
+  if (fb) ok("feedback: one call to the reputation registry, no tokens move", fb.simulation.steps.length === 1 && fb.simulation.walletDeltas.length === 0 && fb.feedback.valueRaw === "5" && fb.feedback.valueDecimals === 0);
+  const fb2 = await run("ERC-8004 feedback -1.25 to agent 1", () => I.prepareAgentFeedback({ agentId: 1, value: "-1.25" }));
+  if (fb2) ok("feedback -1.25 is stored as -125 with 2 decimals", fb2.feedback.valueRaw === "-125" && fb2.feedback.valueDecimals === 2);
+  await run("ERC-8004 feedback to an unregistered agent is refused", () => I.prepareAgentFeedback({ agentId: "999999999999", value: "1" }), { expectError: /not registered/ });
+  await run("ERC-8004 feedback with a bad value is refused", () => I.prepareAgentFeedback({ agentId: 1, value: "five" }), { expectError: /value must be a number/ });
+  await run("ERC-8004 feedback with an http feedbackURI is refused", () => I.prepareAgentFeedback({ agentId: 1, value: "1", feedbackURI: "http://x" }), { expectError: /https:\/\/ or ipfs:\/\// });
+  await run("ERC-8004 revoke with no feedback given is refused", () => I.prepareRevokeFeedback({ agentId: 1, feedbackIndex: 1 }), { expectError: /there is no number 1/ });
+  // giveFeedback then revokeFeedback in one simulated block from the throwaway wallet.
+  const repAbi = (await import("../src/abi/erc8004-reputation.json", { with: { type: "json" } })).default;
+  const give = (who) => ({ label: "giveFeedback", to: ADDR.ERC8004_REPUTATION, value: 0n, data: encodeFunctionData({ abi: repAbi, functionName: "giveFeedback", args: [1n, 5n, 0, "t", "", "", "", "0x" + "0".repeat(64)] }) });
+  const seq = await simulateTxs(me, [give(me), { label: "revokeFeedback(1)", to: ADDR.ERC8004_REPUTATION, value: 0n, data: encodeFunctionData({ abi: repAbi, functionName: "revokeFeedback", args: [1n, 1n] }) }]);
+  ok("simulated give then revoke feedback both succeed", seq.ok, stepsText(seq));
+  const ownerOf1 = await c.readContract({ address: ADDR.ERC8004_IDENTITY, abi: parseAbi(["function ownerOf(uint256) view returns (address)"]), functionName: "ownerOf", args: [1n] });
+  const self = await simulateTxs(ownerOf1, [give(ownerOf1)]);
+  ok("the registry refuses feedback from the agent's own owner", self.steps[0].status === "failure" && /Self-feedback/.test(self.steps[0].error || ""), self.steps[0].error);
+}
 
 // Read-only: the real HOLBRIC creator fee position, and what a claim and a sweep by the real creator would do.
 // eth_simulateV1 needs no signature; nothing is signed or sent.
