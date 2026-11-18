@@ -350,6 +350,35 @@ export async function prepareBridge({ toChain, token = "ETH", toToken, amount, r
 const chainLabel = (id) => (CHAINS[id] ? `${CHAINS[id].name} (${id})` : `chain ${id} (not one of Holbric's bridge chains)`);
 const txUrl = (id, h) => (CHAINS[id] && /^0x[0-9a-fA-F]{64}$/.test(h) ? `${CHAINS[id].explorer}/tx/${h}` : null);
 
+// Relay's request lookup is GET /requests/v3 (GET /requests/v2 is retired on 24 Nov 2026). /requests/v3 requires an API key
+// (x-api-key; docs.relay.link/references/api/api_guides/migrating-to-requests-v3, keys from dashboard.relay.link). Holbric
+// sends one only when RELAY_API_KEY is set in the environment, and only to api.relay.link. Without a key, a request id is
+// still followed through GET /intents/status/v3, which does not need a key; a Robinhood Chain deposit hash is still read
+// on chain, but finding Relay's request for a bare hash needs the key.
+const relayKey = () => (process.env.RELAY_API_KEY || "").trim() || null;
+const keyHeaders = () => (relayKey() ? { "x-api-key": relayKey() } : {});
+/** Tests only: whether a Relay API key would be sent. */
+export const _hasRelayKey = () => !!relayKey();
+
+/** One v3 amount object ({ currency, amount, amountFormatted }) as "1.5 ETH" on a labelled chain. */
+function amountOf(x) {
+  if (!x?.currency) return null;
+  const f = x.amountFormatted ?? (x.amount != null && x.currency.decimals != null ? formatUnits(BigInt(x.amount), x.currency.decimals) : null);
+  return f == null ? null : { amount: `${f} ${x.currency.symbol}`, chain: chainLabel(x.currency.chainId) };
+}
+
+/** Decode the RelayDepository deposit event in a Robinhood Chain transaction (independent of Relay's API). */
+async function readDeposit(hash) {
+  const rc = await publicClient().getTransactionReceipt({ hash }).catch(() => null);
+  const ev = rc?.logs.filter((l) => getAddress(l.address) === RELAY_DEPOSITORY).map((l) => { try { return decodeEventLog({ abi: DEPOSIT_ABI, data: l.data, topics: l.topics }); } catch { return null; } }).find(Boolean);
+  return !rc ? { found: false, note: "receipt not found on Robinhood Chain" } : ev ? {
+    found: true, status: rc.status, block: rc.blockNumber.toString(), sender: rc.from, depositor: ev.args.from,
+    depositorNote: "the address the RelayDepository records for this deposit; it can differ from the sender",
+    amountRaw: ev.args.amount.toString(),
+    amount: ev.eventName === "RelayNativeDeposit" ? `${fmt(ev.args.amount, 18, 18)} ETH` : `${ev.args.amount.toString()} raw of ${ev.args.token}${getAddress(ev.args.token) === ADDR.USDG ? ` (${fmt(ev.args.amount, 6, 6)} USDG)` : ""}`,
+    orderId: ev.args.id, explorer: txLink(hash) } : { found: false, status: rc.status, note: "no RelayDepository deposit event in this transaction" };
+}
+
 /** bridge_status: Relay's status for a request id or a transaction hash, plus an on-chain read of a deposit on Robinhood Chain. */
 export async function bridgeStatus({ requestId, txHash }) {
   requireOn();
@@ -357,39 +386,61 @@ export async function bridgeStatus({ requestId, txHash }) {
   if (!requestId && !txHash) throw new Error("Give a Relay requestId or a transaction hash.");
   if (requestId && !isHash(requestId)) throw new Error("requestId must be a 0x-prefixed 32-byte hex string.");
   if (txHash && !isHash(txHash)) throw new Error("txHash must be a 0x-prefixed 32-byte hex string.");
-  const list = await api(`/requests/v2?${requestId ? `id=${requestId}` : `hash=${txHash}`}`);
+  if (!relayKey()) return bridgeStatusNoKey({ requestId, txHash, isHash });
+  const headers = keyHeaders();
+  // term searches the request id and every transaction hash (deposit, fill, refund), like v2's hash filter did.
+  const list = await api(`/requests/v3?${requestId ? `id=${requestId}` : `term=${txHash}`}&limit=1`, { headers });
   const req = list?.requests?.[0];
   if (!req) {
     if (requestId) {
-      const st = await api(`/intents/status/v3?requestId=${requestId}`);
-      return { source: "Relay API (third party)", requestId, status: st.status, note: st.status === "waiting" ? "Relay has no deposit for this request yet (or does not know the id)." : undefined };
+      const st = await api(`/intents/status/v3?requestId=${requestId}`, { headers });
+      return { source: "Relay API (third party)", requestId, status: st.status, note: st.status === "waiting" || st.status === "unknown" ? "Relay has no deposit for this request yet (or does not know the id)." : undefined };
     }
     return { source: "Relay API (third party)", txHash, status: "unknown", note: "Relay has no request with this transaction hash." };
   }
-  const st = await api(`/intents/status/v3?requestId=${req.id}`).catch(() => null);
-  const m = req.data?.metadata || {};
-  const cur = (x) => (x?.currency ? { amount: `${x.amountFormatted} ${x.currency.symbol}`, chain: chainLabel(x.currency.chainId) } : null);
-  const tx = (t) => ({ chain: chainLabel(t.chainId), hash: t.hash, block: t.block ?? null, time: t.timestamp ? new Date(t.timestamp * 1000).toISOString() : null, explorer: txUrl(t.chainId, t.hash) });
+  const st = await api(`/intents/status/v3?requestId=${req.id}`, { headers }).catch(() => null);
+  const route = req.data?.route || {};
+  const side = (k) => route.actual?.[k] || route.quoted?.[k] || {};
+  const tx = (t) => ({ chain: chainLabel(t.chainId), hash: t.txHash, block: t.block ?? null, time: t.timestamp ? new Date(t.timestamp * 1000).toISOString() : null, explorer: txUrl(t.chainId, t.txHash) });
+  const reason = (r) => (r && r !== "N/A" ? r : null);
   const out = {
     source: "Relay API (third party), with the Robinhood Chain deposit read on chain where there is one.",
     requestId: req.id, status: st?.status || req.status,
-    from: cur(m.currencyIn), to: cur(m.currencyOut),
+    from: amountOf(side("origin").inputCurrency), to: amountOf(side("destination").outputCurrency || side("origin").outputCurrency),
     inTxs: (req.data?.inTxs || []).map(tx), outTxs: (req.data?.outTxs || []).map(tx),
     createdAt: req.createdAt, updatedAt: req.updatedAt,
-    ...(req.data?.failReason && req.data.failReason !== "N/A" ? { failReason: req.data.failReason } : {}),
-    ...(req.data?.refundFailReason && req.data.refundFailReason !== "N/A" ? { refundFailReason: req.data.refundFailReason } : {}),
+    ...(reason(req.data?.failReason) ? { failReason: req.data.failReason } : {}),
+    ...(reason(req.data?.refundFailReason) ? { refundFailReason: req.data.refundFailReason } : {}),
   };
   // Independent check: decode the RelayDepository deposit event from the Robinhood Chain receipt.
-  const rhIn = (req.data?.inTxs || []).find((t) => t.chainId === CHAIN_ID && isHash(t.hash));
-  if (rhIn) {
-    const rc = await publicClient().getTransactionReceipt({ hash: rhIn.hash }).catch(() => null);
-    const ev = rc?.logs.filter((l) => getAddress(l.address) === RELAY_DEPOSITORY).map((l) => { try { return decodeEventLog({ abi: DEPOSIT_ABI, data: l.data, topics: l.topics }); } catch { return null; } }).find(Boolean);
-    out.onChainDeposit = !rc ? { found: false, note: "receipt not found on Robinhood Chain" } : ev ? {
-      found: true, status: rc.status, block: rc.blockNumber.toString(), sender: rc.from, depositor: ev.args.from,
-      depositorNote: "the address the RelayDepository records for this deposit; it can differ from the sender",
-      amountRaw: ev.args.amount.toString(),
-      amount: ev.eventName === "RelayNativeDeposit" ? `${fmt(ev.args.amount, 18, 18)} ETH` : `${ev.args.amount.toString()} raw of ${ev.args.token}${getAddress(ev.args.token) === ADDR.USDG ? ` (${fmt(ev.args.amount, 6, 6)} USDG)` : ""}`,
-      orderId: ev.args.id, explorer: txLink(rhIn.hash) } : { found: false, status: rc.status, note: "no RelayDepository deposit event in this transaction" };
-  }
+  const rhIn = (req.data?.inTxs || []).find((t) => t.chainId === CHAIN_ID && isHash(t.txHash));
+  if (rhIn) out.onChainDeposit = await readDeposit(rhIn.txHash);
   return out;
+}
+
+const NO_KEY_NOTE = "RELAY_API_KEY is not set, so Relay's request details (amounts, fill blocks, failure reasons, lookup by a bare transaction hash) were not read: Relay's GET /requests/v3 needs an API key. Create one at dashboard.relay.link and set it as the RELAY_API_KEY environment variable.";
+/** Without an API key: GET /intents/status/v3 for a request id (no key needed), and the on-chain deposit read for a Robinhood Chain hash. */
+async function bridgeStatusNoKey({ requestId, txHash, isHash }) {
+  if (requestId) {
+    const st = await api(`/intents/status/v3?requestId=${requestId}`);
+    if (st.status === "waiting" || st.status === "unknown" || !st.originChainId)
+      return { source: "Relay API (third party)", requestId, status: st.status, note: "Relay has no deposit for this request yet (or does not know the id)." };
+    const ins = (st.inTxHashes || []).filter(isHash), outs = (st.txHashes || []).filter(isHash);
+    const tx = (chainId) => (h) => ({ chain: chainLabel(chainId), hash: h, explorer: txUrl(chainId, h) });
+    const out = {
+      source: "Relay API (third party; GET /intents/status/v3), with the Robinhood Chain deposit read on chain where there is one.",
+      requestId, status: st.status, fromChain: chainLabel(st.originChainId), toChain: chainLabel(st.destinationChainId),
+      inTxs: ins.map(tx(st.originChainId)), outTxs: outs.map(tx(st.destinationChainId)),
+      updatedAt: st.updatedAt ? new Date(st.updatedAt).toISOString() : null,
+      ...(st.failReason && st.failReason !== "N/A" ? { failReason: st.failReason } : {}),
+      ...(st.refundFailReason && st.refundFailReason !== "N/A" ? { refundFailReason: st.refundFailReason } : {}),
+      note: NO_KEY_NOTE,
+    };
+    if (st.originChainId === CHAIN_ID && ins[0]) out.onChainDeposit = await readDeposit(ins[0]);
+    return out;
+  }
+  const dep = await readDeposit(txHash);
+  return { source: "Robinhood Chain (on-chain read). Relay's API was not asked.", txHash, status: "unknown",
+    onChainDeposit: dep,
+    note: `${NO_KEY_NOTE} Without it, follow the bridge by the requestId that prepare_bridge returned.` };
 }

@@ -405,23 +405,40 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
   await call("prepare_bridge", { toChain: "base", token: "ETH", amount: "0.001" }, /not enough for the network fee/);
   await call("prepare_bridge", { toChain: "robinhood", token: "ETH", amount: "0.001" }, /same chain/);
 
-  // bridge_status on the most recent finished Relay request out of Robinhood Chain to one of Holbric's chains.
-  const recent = (await (await fetch("https://api.relay.link/requests/v2?originChainId=4663&limit=50")).json()).requests
-    .find((r) => r.status === "success" && [1, 8453, 42161, 10, 130].includes(r.data?.metadata?.currencyOut?.currency?.chainId)
-      && ["ETH", "USDG"].includes(r.data?.metadata?.currencyIn?.currency?.symbol) && r.data?.inTxs?.[0]?.chainId === 4663);
-  if (recent) {
-    const byHash = JSON.parse(await call("bridge_status", { txHash: recent.data.inTxs[0].hash }));
-    const byId = JSON.parse(await call("bridge_status", { requestId: recent.id }));
-    const inAmt = BigInt(recent.data.metadata.currencyIn.amount);
-    const dep = byHash.onChainDeposit;
-    // The depository credits Relay's `user`; the transaction sender can be someone else (a smart account's bundler, for example).
-    const recordedDepositor = recent.user || "";
-    check(`bridge_status by hash and by id agree (${byHash.requestId.slice(0, 12)}..., ${byHash.status}, ${byHash.from?.amount} -> ${byHash.to?.amount} on ${byHash.to?.chain})`,
-      byHash.requestId === recent.id && byId.requestId === recent.id && byHash.status === "success" && byHash.outTxs.length > 0);
+  // bridge_status. Relay's request lookup is GET /requests/v3 (v2 is retired on 24 Nov 2026), which needs an API key.
+  // With RELAY_API_KEY set: the most recent finished request out of Robinhood Chain to one of Holbric's chains, by hash and by id.
+  // Without it: a real finished request (USDG on Robinhood Chain -> USDC on Base, from Relay's public request listing on
+  // 18 Nov 2026), followed by id through GET /intents/status/v3 (no key), and its deposit hash read on chain.
+  const KNOWN = { id: "0x17949844303a8d49384c8b1ee8af9aba3f4d66d45e071f9e37981e930a612434", deposit: "0x5c14ff5db1be8dd062fcc4877fbcc87679d944da959e000387360b77d0266949",
+    fill: "0xec400d7e3c7fdff256be764de05a4263675fdc7da1f6a6915aa92fa89eaede27", amountInRaw: "162360000", block: "117208330" };
+  if (process.env.RELAY_API_KEY) {
+    const list = await (await fetch("https://api.relay.link/requests/v3?originChainId=4663&status=success&limit=50", { headers: { "x-api-key": process.env.RELAY_API_KEY } })).json();
+    const inOf = (r) => r.data?.route?.actual?.origin?.inputCurrency || r.data?.route?.quoted?.origin?.inputCurrency;
+    const outOf = (r) => r.data?.route?.actual?.destination?.outputCurrency || r.data?.route?.quoted?.destination?.outputCurrency;
+    const recent = (list.requests || []).find((r) => r.status === "success" && [1, 8453, 42161, 10, 130].includes(outOf(r)?.currency?.chainId)
+      && ["ETH", "USDG"].includes(inOf(r)?.currency?.symbol) && r.data?.inTxs?.[0]?.chainId === 4663);
+    check(`Relay /requests/v3 with RELAY_API_KEY lists a finished request out of Robinhood Chain (${recent?.id?.slice(0, 12)}...)`, !!recent);
+    if (recent) {
+      const byHash = JSON.parse(await call("bridge_status", { txHash: recent.data.inTxs[0].txHash }));
+      const byId = JSON.parse(await call("bridge_status", { requestId: recent.id }));
+      const dep = byHash.onChainDeposit;
+      check(`bridge_status by hash and by id agree (${byHash.requestId?.slice(0, 12)}..., ${byHash.status}, ${byHash.from?.amount} -> ${byHash.to?.amount} on ${byHash.to?.chain})`,
+        byHash.requestId === recent.id && byId.requestId === recent.id && byHash.status === "success" && byHash.outTxs.length > 0 && !!byHash.from && !!byHash.to);
+      check(`bridge_status reads the deposit on chain: RelayDepository event at block ${dep?.block}, ${dep?.amount}`,
+        dep?.found && dep.status === "success" && dep.depositor.toLowerCase() === (recent.user || "").toLowerCase() && BigInt(dep.amountRaw) === BigInt(inOf(recent).amount));
+    }
+  } else {
+    const byId = JSON.parse(await call("bridge_status", { requestId: KNOWN.id }));
+    const dep = byId.onChainDeposit;
+    check(`bridge_status by id without a Relay key (GET /intents/status/v3): ${byId.status}, ${byId.fromChain} -> ${byId.toChain}, fill ${byId.outTxs?.[0]?.hash?.slice(0, 12)}...`,
+      byId.status === "success" && /\(4663\)/.test(byId.fromChain) && /Base \(8453\)/.test(byId.toChain)
+      && byId.inTxs?.[0]?.hash === KNOWN.deposit && byId.outTxs?.[0]?.hash === KNOWN.fill && /RELAY_API_KEY/.test(byId.note));
     check(`bridge_status reads the deposit on chain: RelayDepository event at block ${dep?.block}, ${dep?.amount}`,
-      dep?.found && dep.status === "success" && dep.depositor.toLowerCase() === recordedDepositor.toLowerCase()
-      && dep.sender.toLowerCase() === recent.data.inTxs[0].data.from.toLowerCase() && BigInt(dep.amountRaw) === inAmt);
-  } else { check("no finished ETH/USDG request out of Robinhood Chain to Holbric's chains in Relay's last 50 (status read not exercised)", true); check("(skipped)", true); }
+      dep?.found && dep.status === "success" && dep.block === KNOWN.block && dep.amountRaw === KNOWN.amountInRaw);
+    const byHash = JSON.parse(await call("bridge_status", { txHash: KNOWN.deposit }));
+    check(`bridge_status by hash without a Relay key reads the deposit on chain and says the key is needed (${byHash.onChainDeposit?.amount})`,
+      byHash.onChainDeposit?.found && byHash.onChainDeposit.orderId === dep?.orderId && /RELAY_API_KEY/.test(byHash.note) && /dashboard\.relay\.link/.test(byHash.note));
+  }
   const unknown = JSON.parse(await call("bridge_status", { requestId: "0x" + "ab".repeat(32) }));
   check(`bridge_status on an unknown id says so (${unknown.status})`, unknown.status === "waiting" || unknown.status === "unknown");
   await call("bridge_status", { txHash: "0x1234" }, /32-byte hex/);
@@ -449,6 +466,37 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
     ["an expired deadline", (o) => { o.output.deadline = Math.floor(Date.now() / 1000) - 10; }, /deadline/],
   ];
   for (const [label, fn, re, rehash] of cases) { const p = tamper(fn, rehash !== false); check(`order check refuses ${label}: ${p[0] || "nothing flagged"}`, p.some((x) => re.test(x))); }
+
+  // In-process: RELAY_API_KEY is sent as x-api-key only when set, only to api.relay.link, and the v3 response is read
+  // (route amounts, txHash). Only GET /requests/v3 is answered locally, in the documented v3 shape with the values of the
+  // real request above; GET /intents/status/v3 and the deposit receipt are read live.
+  {
+    const realFetch0 = globalThis.fetch; const seen = []; const savedKey = process.env.RELAY_API_KEY;
+    const cur = (chainId, symbol, amount, amountFormatted) => ({ currency: { chainId, symbol, decimals: 6 }, amount, amountFormatted });
+    const v3 = { requests: [{ id: KNOWN.id, status: "success", createdAt: "2026-11-18T06:47:17.603Z", updatedAt: "2026-11-18T06:47:48.044Z",
+      data: { failReason: null, refundFailReason: null,
+        inTxs: [{ txHash: KNOWN.deposit, chainId: 4663, block: Number(KNOWN.block) }], outTxs: [{ txHash: KNOWN.fill, chainId: 8453 }],
+        route: { actual: { origin: { inputCurrency: cur(4663, "USDG", KNOWN.amountInRaw, "162.36") }, destination: { outputCurrency: cur(8453, "USDC", "161866170", "161.86617") } } } } }] };
+    globalThis.fetch = async (url, init = {}) => {
+      const u = new URL(String(url)); const h = new Headers(init.headers || {});
+      seen.push({ host: u.host, path: u.pathname, key: h.get("x-api-key") });
+      if (u.host === "api.relay.link" && u.pathname === "/requests/v3") return new Response(JSON.stringify(v3), { status: 200, headers: { "content-type": "application/json" } });
+      return realFetch0(url, init);
+    };
+    try {
+      process.env.RELAY_API_KEY = "holbric-test-key";
+      const r = await R.bridgeStatus({ txHash: KNOWN.deposit });
+      const relayCalls = seen.filter((x) => x.host === "api.relay.link");
+      check(`with RELAY_API_KEY: x-api-key goes to api.relay.link only, and /requests/v3 is asked by term (${relayCalls.map((x) => x.path).join(", ")})`,
+        relayCalls.some((x) => x.path === "/requests/v3") && relayCalls.every((x) => x.key === "holbric-test-key") && seen.filter((x) => x.host !== "api.relay.link").every((x) => !x.key));
+      check(`v3 response read: ${r.from?.amount} on ${r.from?.chain} -> ${r.to?.amount} on ${r.to?.chain}, status ${r.status}, deposit ${r.onChainDeposit?.amount}`,
+        r.requestId === KNOWN.id && r.from?.amount === "162.36 USDG" && r.to?.amount === "161.86617 USDC" && /Base \(8453\)/.test(r.to.chain)
+        && r.inTxs[0].hash === KNOWN.deposit && r.outTxs[0].hash === KNOWN.fill && r.status === "success" && r.onChainDeposit?.amountRaw === KNOWN.amountInRaw && !r.failReason);
+      delete process.env.RELAY_API_KEY; seen.length = 0;
+      await R.bridgeStatus({ requestId: KNOWN.id });
+      check("without RELAY_API_KEY: no x-api-key header is sent and /requests/v3 is not asked", seen.every((x) => !x.key) && !seen.some((x) => x.path === "/requests/v3"));
+    } finally { globalThis.fetch = realFetch0; if (savedKey) process.env.RELAY_API_KEY = savedKey; else delete process.env.RELAY_API_KEY; }
+  }
 
   // Privacy and the opt-out, in-process.
   const realFetch = globalThis.fetch; const sent = [];
