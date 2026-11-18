@@ -4,7 +4,7 @@ Dates below are calendar dates in Asia/Jakarta. This is the public record of Hol
 
 ## 0.5.0 — 18 November 2026
 
-27 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v4 sits next to v3, and graduated Pons tokens can be traded again.
+27 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v4 sits next to v3, and Holbric now trades graduated Pons tokens on their v4 pools.
 
 - **v3 and v4 compared.** `quote_swap`, `find_route` and `prepare_swap` now quote Uniswap v4 routes next to v3 routes and take the better output (`venue: "best"` by default, or `"v3"` / `"v4"`). v4 pools are read by key from StateView `0xF3334192D15450CdD385c8B70e03f9A6bD9E673b` and quoted with V4Quoter `0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94`: hookless pools at the four standard keys, direct or 2 hops through native ETH, USDG and cbBTC. A route stays on one version.
 - **Graduated Pons tokens.** Once a launch leaves its bonding curve, `pons_token` reads the price from its v4 pool, and `pons_quote` and `prepare_pons_trade` trade on that pool. The pool key comes from the Pons factory record (pair token, pool fee, tick spacing) with the Pons V2 hook `0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044`, and the hook must list the pool as registered. Other routes can reach these pools too, for example USDG → ETH → ORBIT.
