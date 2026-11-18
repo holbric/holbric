@@ -16,6 +16,7 @@ const KNOWN_ERRORS = parseAbi([
   "error NotFeeSweepOperator()", "error InternalSwapRequiresOperator()", "error AlreadyGraduated()", "error CurveGraduated()",
   "error SlippageExceeded(uint256 actual, uint256 minimum)", "error MinimumOutputRequired()", "error NativeValueMismatch(uint256 supplied, uint256 expected)",
   "error UnexpectedNativeValue()", "error ZeroAmount()", "error NoBalance()", "error InsufficientBalance()", "error UnknownPool()", "error TransferFailed()",
+  "error NotApproved(address caller)", "error DeadlinePassed()", "error MaximumAmountExceeded(uint128 maximumAmount, uint128 amountRequested)", "error MinimumAmountInsufficient(uint128 minimumAmount, uint128 amountReceived)",
   "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)", "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
 ]);
 function revertReason(r) {

@@ -2,12 +2,12 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.8.0 covers 9 projects with 35 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.9.0 covers 9 projects with 42 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
 | Wallet (Robinhood Chain) | Show its address and balances, value any address's holdings and Morpho positions at one block, look up any token, send ETH or ERC-20s, wrap and unwrap WETH | `wallet_address`, `chain_status`, `get_balances`, `portfolio`, `token_info`, `prepare_send`, `prepare_wrap_eth`, `prepare_unwrap_weth`, `execute_prepared` |
-| Uniswap v3 and v4 | Find the best route across v3 and v4 (direct pools, or 2 hops through WETH, ETH, USDG or cbBTC), quote it, and swap; list v4 pools for a pair and quote on v4 alone | `quote_swap`, `find_route`, `prepare_swap`, `v4_pools`, `quote_v4` |
+| Uniswap v3 and v4 | Find the best route across v3 and v4 (direct pools, or 2 hops through WETH, ETH, USDG or cbBTC), quote it, and swap; list v4 pools for a pair and quote on v4 alone; read Uniswap v4 liquidity positions and quote or prepare adding, removing and collecting fees | `quote_swap`, `find_route`, `prepare_swap`, `v4_pools`, `quote_v4`, `lp_positions`, `quote_add_liquidity`, `prepare_add_liquidity`, `quote_remove_liquidity`, `prepare_remove_liquidity`, `quote_collect_lp_fees`, `prepare_collect_lp_fees` |
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
@@ -17,7 +17,7 @@ Version 0.8.0 covers 9 projects with 35 tools. Every integration below was teste
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, Relay 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 9, Uniswap 12, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, Relay 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -51,7 +51,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.8.0/holbric-0.8.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.9.0/holbric-0.9.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -97,8 +97,9 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | Uniswap v3 QuoterV2 / SwapRouter02 | `0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7` / `0xCaf681a66D020601342297493863E78C959E5cb2` |
 | Uniswap v4 PoolManager | `0x8366a39CC670B4001A1121B8F6A443A643e40951` (exact match on Sourcify: PoolManager) |
 | Uniswap v4 V4Quoter / StateView | `0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94` / `0xF3334192D15450CdD385c8B70e03f9A6bD9E673b` (exact matches; `poolManager()` returns the PoolManager) |
+| Uniswap v4 PositionManager | `0x58daec3116aae6D93017bAAea7749052E8a04fA7` (exact match on Sourcify: PositionManager). On chain, `poolManager()`, `permit2()` and `WETH9()` return the PoolManager, Permit2 and WETH above. Deployed by create2 at block 9073 (tx `0x228c18ada6cb46b4fbcc18f4ec1519953415393e256fa8349aafbd5a2db037c8`), with those same constructor arguments. Listed on Uniswap's Robinhood Chain: 4663 deployment table |
 | Uniswap Universal Router 2.1.2 | `0x204FAca1764B154221e35c0d20aBb3c525710498` (exact match; constructor arguments name this PoolManager, Permit2, WETH and the v3 factory) |
-| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` (exact match on Sourcify: Permit2; `PositionManager.permit2()` returns this address) |
 | cbBTC (route middle hop) | `0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4` (exact match on Sourcify, `name()` Coinbase Wrapped BTC) |
 | Pons V2 launch factory | `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e` (exact match on Sourcify: PonsV2LaunchFactory) |
 | Pons V2 fee escrow | `0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e` (exact match on Sourcify: PonsV2FeeEscrow) |
@@ -136,6 +137,21 @@ Uniswap v4:
 4. On v4, native ETH (`0x0`) and WETH are different currencies. ETH routes use native pools, WETH routes use WETH pools.
 
 The best output across v3 and v4 wins; on a tie the shorter route wins. `v4_pools` lists the v4 pools Holbric can see for a pair (id, key, liquidity, price, tick, fees) and `quote_v4` quotes on v4 alone, optionally on one pool key you give it.
+
+### Uniswap v4 liquidity positions
+
+Positions are ERC-721s minted by the PositionManager (`Uniswap v4 Positions NFT`, symbol `UNI-V4-POSM`). The contract is not enumerable, so `lp_positions` finds a wallet's token ids from its Transfer logs, starting at the PositionManager's deploy block (9073), in 10-million-block chunks. You can also pass `tokenId` or `tokenIds`. Each position is then read at one block from the PositionManager and StateView: pool key, ticks, in-range status, liquidity, principal token amounts, and uncollected fees. Fees are computed from fee-growth counters the way `Position.update` does in the verified v4 core source. In-range means the pool tick is in `[tickLower, tickUpper)`.
+
+`quote_add_liquidity` and `prepare_add_liquidity` mint a new NFT or increase an existing one (`tokenId`). For a new mint, Holbric only uses hookless pools (the most liquid live standard-key pool for the pair, or a fee / pool key you give). Give `tickLower` and `tickUpper` (snapped to the pool's tick spacing) or `fullRange: true`. The liquidity and the tokens actually used come from the same `LiquidityAmounts` formulas as the PositionManager. Leftover of the less-limiting token is not deposited. Approvals are the exact maximum (used amount plus the slippage limit, default 0.5%) to Permit2, then an exact 30-minute Permit2 allowance for the PositionManager. Native ETH goes in as `msg.value`; leftover ETH is swept back to the wallet. Holbric does not initialize a new pool.
+
+`quote_remove_liquidity` and `prepare_remove_liquidity` take a `tokenId`. Omit `liquidity` and `percent` to remove all liquidity and burn the NFT. A partial remove keeps the NFT. Tokens paid out are the principal plus uncollected fees. The PositionManager's slippage check is on the principal only; the minimums Holbric sets follow that.
+
+`quote_collect_lp_fees` and `prepare_collect_lp_fees` collect fees with a decrease of 0 liquidity, leaving the NFT and its liquidity in place. A position with zero liquidity cannot be poked; burn it with `prepare_remove_liquidity` instead.
+
+New mints on hooked pools, including graduated Pons pools, are refused. An existing hooked position can still be read, and a remove or collect is prepared only if the hook allows it (the mainnet simulation is the check).
+
+The usual simulation and the re-check inside `execute_prepared` apply. Nothing is signed by the quote or prepare tools.
+
 
 Robinhood Stock Tokens are never used as a middle hop. A stock token with no direct pool against your input can still be reached: for example ETH to AMZN goes ETH → USDG → AMZN, because the factory has no live WETH/AMZN pool.
 

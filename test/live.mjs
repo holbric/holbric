@@ -29,7 +29,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 35 (got ${tools.tools.length})`, tools.tools.length === 35);
+check(`tool count is 42 (got ${tools.tools.length})`, tools.tools.length === 42);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -87,6 +87,33 @@ check("pons_token on a graduated token reads its v4 pool", pt.status === "gradua
 const pq = JSON.parse(await call("pons_quote", { token: ORBIT, side: "buy", amount: "0.01" }));
 check("pons_quote on a graduated token quotes its v4 pool", pq.phase === "graduated" && pq.venue.includes(ORBIT_POOL) && BigInt(pq.amountOutRaw) > 0n);
 await call("pons_quote", { token: ORBIT, side: "sell", amount: "100000" });
+// Uniswap v4 liquidity positions (0.9.0). Public Positions NFT holder who deployed the PositionManager (create2, block 9073); not a Holbric wallet.
+const LP_HOLDER = "0x9701fb0aDe1E269c8f64Ec0C7b3cfADB31A13A52";
+const lps = JSON.parse(await call("lp_positions", { address: LP_HOLDER }));
+check("lp_positions recovers both Positions NFTs from Transfer logs, matching balanceOf", lps.total === 2 && lps.discovery?.balanceOf === "2" && lps.discovery?.failedRequests === 0 && lps.positions.map((p) => p.tokenId).join(",") === "1,2");
+const p1 = lps.positions[0];
+check("position 1 is a hookless in-range WETH/SMK4 0.3% full-range position with uncollected fees",
+  p1 && p1.tokenId === "1" && p1.owner.toLowerCase() === LP_HOLDER.toLowerCase() && p1.inRange === true && p1.hook === "hookless" && p1.fee === "0.3%"
+  && p1.token0.symbol === "WETH" && p1.tickLower === -887220 && p1.tickUpper === 887220
+  && BigInt(p1.liquidity) > 0n && BigInt(p1.uncollectedFees.token0Raw) > 0n && BigInt(p1.principal.token0Raw) > 0n);
+const { publicClient: pc } = await import("../src/chain.js");
+const { parseAbi } = await import("viem");
+const owner1 = await pc().readContract({ address: "0x58daec3116aae6D93017bAAea7749052E8a04fA7", abi: parseAbi(["function ownerOf(uint256 id) view returns (address)"]), functionName: "ownerOf", args: [1n] });
+check("PositionManager.ownerOf(1) matches lp_positions", owner1.toLowerCase() === p1.owner.toLowerCase());
+const one = JSON.parse(await call("lp_positions", { tokenId: "1" }));
+check("lp_positions by tokenId skips the log scan and returns that NFT", one.total === 1 && one.positions[0].tokenId === "1" && one.method?.includes("token id"));
+const addQ = JSON.parse(await call("quote_add_liquidity", { tokenA: "ETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fullRange: true }));
+check(`quote_add_liquidity ETH/USDG picks a live hookless pool and uses both tokens (${addQ.fee}, liquidity ${addQ.liquidity})`,
+  addQ.hook === "hookless" && addQ.inRange === true && addQ.token0.symbol === "ETH" && addQ.token1.symbol === "USDG"
+  && addQ.tickLower < addQ.tickUpper && BigInt(addQ.liquidity) > 0n && BigInt(addQ.uses.token0Raw) > 0n && BigInt(addQ.uses.token1Raw) > 0n
+  && BigInt(addQ.uses.token0Raw) <= 10n ** 16n && BigInt(addQ.uses.token1Raw) <= 20n * 10n ** 6n);
+const colQ = JSON.parse(await call("quote_collect_lp_fees", { tokenId: "1" }));
+check("quote_collect_lp_fees on position 1 matches lp_positions fees", colQ.uncollectedFees.token0Raw === p1.uncollectedFees.token0Raw && colQ.uncollectedFees.token1Raw === p1.uncollectedFees.token1Raw && colQ.action.includes("collect"));
+const remQ = JSON.parse(await call("quote_remove_liquidity", { tokenId: "1" }));
+check("quote_remove_liquidity of all of position 1 burns the NFT and includes principal plus fees",
+  remQ.burnNft === true && remQ.liquidityToRemove === p1.liquidity
+  && remQ.expectedTotal.token0 && BigInt(remQ.principalOut.token0Raw) === BigInt(p1.principal.token0Raw));
+await call("quote_add_liquidity", { tokenA: "ETH", tokenB: ORBIT, amountA: "0.01", amountB: "1000", fee: 0, tickSpacing: 200, hooks: PONS_HOOK, fullRange: true }, /hookless|Pons V2 hook/);
 await call("stock_tokens", { search: "TSLA", limit: 3 });
 await call("stock_quote", { stock: "NVDA", side: "sell", amount: "1" });
 await call("pons_token", { token: HOLBRIC });
@@ -114,6 +141,9 @@ await call("prepare_pons_trade", { token: ORBIT, side: "buy", amount: "0.001" },
 await call("prepare_pons_claim", { asset: "ETH" }, EMPTY);
 await call("prepare_pons_sweep", { token: HOLBRIC }, EMPTY);
 await call("prepare_register_agent", { agentURI: "https://holbric.com/agent.json" }, EMPTY);
+await call("prepare_add_liquidity", { tokenA: "ETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fullRange: true }, EMPTY);
+await call("prepare_remove_liquidity", { tokenId: "1" }, /owned by|Not enough|no ETH|Fund it|not a current/);
+await call("prepare_collect_lp_fees", { tokenId: "1" }, /owned by|Not enough|no ETH|Fund it|not a current/);
 await call("execute_prepared", { prepareId: "hp_doesnotexist", confirm: true }, /Unknown or expired prepareId/);
 await call("prepare_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "kyber" }, EMPTY);
 await call("prepare_swap", { tokenIn: "USDG", tokenOut: "ETH", amount: "5", venue: "best" }, EMPTY);

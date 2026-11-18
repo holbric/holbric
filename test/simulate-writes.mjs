@@ -17,6 +17,7 @@ const { prepareSend } = await import("../src/send.js");
 const { preparePonsTrade } = await import("../src/pons.js");
 const { prepareRegisterAgent } = await import("../src/identity.js");
 const { prepareWrap, prepareUnwrap } = await import("../src/weth.js");
+const { prepareAddLiquidity, prepareRemoveLiquidity, prepareCollectLpFees, quoteCollectLpFees, quoteRemoveLiquidity } = await import("../src/lp.js");
 const { ponsCreatorFees, preparePonsSweep, preparePonsClaim } = await import("../src/ponsfees.js");
 const { _peek, recheck, execute } = await import("../src/actions.js");
 const R = await import("../src/relay.js");
@@ -259,6 +260,64 @@ if (b4) ok("a named recipient is flagged as not this wallet; Robinhood Chain ref
     finally { Date.now = realNow; }
   }
 }
+// Uniswap v4 LP (0.9.0): mint on hookless ETH/USDG and WETH/USDG pools with this throwaway wallet (pretend balances).
+// Remove and collect are simulated from a real public Positions NFT holder (the PositionManager deployer); nothing is signed.
+const LP_HOLDER = "0x9701fb0aDe1E269c8f64Ec0C7b3cfADB31A13A52";
+const addEth = await run("mint full-range ETH/USDG v4 position (0.01 ETH + 20 USDG)", () => prepareAddLiquidity({ tokenA: "ETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fullRange: true }));
+if (addEth) {
+  ok("ETH/USDG mint goes through PositionManager with native ETH as value and an exact USDG Permit2 allowance",
+    addEth.simulation.steps.some((s) => /mint Uniswap v4 position on ETH\/USDG/.test(s.step) && s.status === "success")
+    && /Approve exactly .* USDG for Permit2/.test(addEth.summary)
+    && /Permit2: let Uniswap v4 PositionManager 0x58daec3116aae6D93017bAAea7749052E8a04fA7 pull exactly .* USDG/.test(addEth.summary)
+    && addEth.simulation.walletDeltas.some((d) => d.symbol === "ETH" && d.change.startsWith("-"))
+    && addEth.simulation.walletDeltas.some((d) => d.symbol === "USDG" && d.change.startsWith("-"))
+    && !/unlimited/i.test(addEth.summary.replace(/Not unlimited/g, "")),
+    addEth.simulation.walletDeltas.map((d) => `${d.change} ${d.symbol}`).join(", "));
+  const used0 = BigInt(addEth.quote.uses.token0Raw), got0 = -BigInt(addEth.simulation.walletDeltas.find((d) => d.symbol === "ETH")?.raw || 0);
+  const used1 = BigInt(addEth.quote.uses.token1Raw), got1 = -BigInt(addEth.simulation.walletDeltas.find((d) => d.symbol === "USDG")?.raw || 0);
+  ok("ETH/USDG mint uses about the quoted amounts, within 0.5% slippage",
+    got0 >= used0 * 9950n / 10000n && got0 <= used0 * 10050n / 10000n && got1 >= used1 * 9950n / 10000n && got1 <= used1 * 10050n / 10000n,
+    `quoted ${used0} ETH / ${used1} USDG, simulated ${got0} / ${got1}`);
+}
+const addWeth = await run("mint full-range WETH/USDG v4 position (exact Permit2 for both tokens)", () => prepareAddLiquidity({ tokenA: "WETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fee: 500, fullRange: true }));
+if (addWeth) ok("WETH/USDG mint approves exact amounts of both tokens to Permit2 for the PositionManager",
+  /Approve exactly .* WETH for Permit2/.test(addWeth.summary) && /Approve exactly .* USDG for Permit2/.test(addWeth.summary)
+  && addWeth.simulation.ok && addWeth.quote.poolId !== addEth?.quote?.poolId,
+  addWeth.quote.poolId);
+const addTight = await run("mint a tight-range ETH/USDG v4 position around the current tick", async () => {
+  const { quoteAddLiquidity } = await import("../src/lp.js");
+  const q = await quoteAddLiquidity({ tokenA: "ETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fee: 500, fullRange: true });
+  const ts = q.poolKey.tickSpacing, lo = Math.floor((q.currentTick - 2000) / ts) * ts, hi = Math.ceil((q.currentTick + 2000) / ts) * ts;
+  return prepareAddLiquidity({ tokenA: "ETH", tokenB: "USDG", amountA: "0.01", amountB: "20", fee: 500, tickLower: lo, tickUpper: hi });
+});
+if (addTight) ok("tight-range mint is in range and succeeds", addTight.simulation.ok && addTight.quote.inRange === true && addTight.quote.tickLower > -887270, `${addTight.quote.tickLower} to ${addTight.quote.tickUpper}`);
+await run("mint on a Pons hooked pool is refused", () => prepareAddLiquidity({ tokenA: "ETH", tokenB: ORBIT, amountA: "0.01", amountB: "1000", fee: 0, tickSpacing: 200, hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", fullRange: true }), { expectError: /hookless|Pons V2 hook/ });
+await run("collect fees on a position this wallet does not own is refused", () => prepareCollectLpFees({ tokenId: "1" }), { expectError: /owned by/ });
+await run("remove liquidity on a position this wallet does not own is refused", () => prepareRemoveLiquidity({ tokenId: "1" }), { expectError: /owned by/ });
+
+// Collect and burn from the real public holder, simulated only. WETH (standard Transfer) must match the quote to the wei.
+const { encodeAbiParameters, encodePacked, encodeFunctionData: enc } = await import("viem");
+const { POSITION_MANAGER } = await import("../src/lp.js");
+const DEC = 0x01, BUR = 0x03, TAKE = 0x11, MSG = "0x0000000000000000000000000000000000000001";
+const pack = (actions, params) => encodeAbiParameters([{ type: "bytes" }, { type: "bytes[]" }], [encodePacked(actions.map(() => "uint8"), actions), params]);
+const decP = (id, liq, a0, a1) => encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }, { type: "uint128" }, { type: "uint128" }, { type: "bytes" }], [id, liq, a0, a1, "0x"]);
+const burnP = (id, a0, a1) => encodeAbiParameters([{ type: "uint256" }, { type: "uint128" }, { type: "uint128" }, { type: "bytes" }], [id, a0, a1, "0x"]);
+const takeP = (c0, c1) => encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "address" }], [c0, c1, MSG]);
+const pmCall = (data) => enc({ abi: parseAbi(["function modifyLiquidities(bytes unlockData, uint256 deadline) payable"]), functionName: "modifyLiquidities", args: [data, BigInt(Math.floor(Date.now() / 1000) + 900)] });
+const colQ = await quoteCollectLpFees({ tokenId: "1" });
+const colSim = await simulateTxs(LP_HOLDER, [{ label: "collect fees on position 1", to: POSITION_MANAGER, value: 0n, data: pmCall(pack([DEC, TAKE], [decP(1n, 0n, 0n, 0n), takeP(colQ.poolKey.currency0, colQ.poolKey.currency1)])) }]);
+const colWeth = colSim.walletDeltas.find((d) => d.symbol === "WETH");
+ok("simulated collect on position 1 succeeds and pays the quoted WETH fees to the wei",
+  colSim.ok && colSim.method === "eth_simulateV1" && colWeth && colWeth.raw === colQ.uncollectedFees.token0Raw,
+  colWeth ? `${colWeth.change} WETH, quoted ${colQ.uncollectedFees.token0}` : colSim.steps[0]?.error);
+const remQ = await quoteRemoveLiquidity({ tokenId: "2" });
+const burnSim = await simulateTxs(LP_HOLDER, [{ label: "burn position 2", to: POSITION_MANAGER, value: 0n, data: pmCall(pack([BUR, TAKE], [burnP(2n, 0n, 0n), takeP(remQ.poolKey.currency0, remQ.poolKey.currency1)])) }]);
+const burnWeth = burnSim.walletDeltas.find((d) => d.symbol === "WETH");
+const expectWeth = (BigInt(remQ.principalOut.token0Raw) + BigInt(remQ.uncollectedFees.token0Raw)).toString();
+ok("simulated burn of position 2 pays the quoted WETH principal plus fees to the wei",
+  burnSim.ok && burnWeth && burnWeth.raw === expectWeth,
+  burnWeth ? `${burnWeth.change} WETH, quoted ${expectWeth}` : burnSim.steps[0]?.error);
+
 // Read-only: the real HOLBRIC creator fee position, and what a claim and a sweep by the real creator would do.
 // eth_simulateV1 needs no signature; nothing is signed or sent.
 const fees = await ponsCreatorFees({ curve: HOLBRIC_CURVE, recipient: CREATOR });
