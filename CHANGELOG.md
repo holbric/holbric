@@ -2,6 +2,35 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.7.0 — 18 November 2026
+
+32 tools across 8 projects on Robinhood Chain mainnet (chain id 4663). Holbric now reads Morpho lending and values a whole wallet. Everything new in this release is read-only: no new write tools.
+
+- **Morpho, read on chain.** Morpho Blue `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010`, AdaptiveCurveIrm `0x2BD3d5965B26B51814AC95127B2b80dD6CcC0fa1` and VaultV2Factory `0x0FBad98595b0186dA120E41f77C102beb49f803c` come from Morpho's own address registry ([morpho-org/sdks](https://github.com/morpho-org/sdks/blob/main/packages/morpho-ts/src/addresses.ts), `RobinhoodMainnet = 4663`). Each has code on chain and is verified on Sourcify for chain 4663. Markets are found from Morpho Blue's `CreateMarket` events (540 at release), vaults from the factory's `CreateVaultV2` events (122). Every figure is read at one block, with interest accrued to the block time the way Morpho Blue does it.
+- **New `morpho_markets`.** Loan and collateral token (with addresses, and whether each is USDG, WETH, cbBTC, an official Robinhood Stock Token or a Pons V2 launch), LLTV, oracle and its price, IRM, supply, borrow, liquidity, utilization, and supply and borrow APY computed from the IRM's `borrowRateView`. By default only markets listed in Morpho's app are shown; that flag is the one thing taken from Morpho's API (`api.morpho.org`). If the API is down, Holbric says so and shows only markets whose tokens are all in its own lists. At block 117041747 the largest listed market lent 358,514,434 USDG against USDe at 88.9% utilization, supply APY 3.945%, borrow APY 4.437%.
+- **New `morpho_position`.** Any address's positions across every market: supplied, borrowed, collateral, health factor, LTV, oracle price, liquidation price and the drop to it, plus Morpho Vault V2 shares and what they are worth. On chain only; no API. Example at block 117041727: a Safe (`0x498752D5fa0600CBd613074C151Abe15B3FeC7CB`) borrowed 380,528.014123 USDG against 4,662.439341 NVDA in the NVDA/USDG market `0x8b16891f…c3e` (LLTV 62.5%). The oracle had NVDA at 159.94919 USDG, health factor 1.2249, liquidation at 130.58504 USDG, 18.36% lower.
+- **New `morpho_vaults`.** Vault V2 vaults from the factory (each confirmed with `isVaultV2`), asset, total assets at the block, owner, curator and fees. The APY shown is Morpho's API figure, labelled as such: the public RPC keeps no historical state, so Holbric cannot measure share-price growth itself. The registry lists no MetaMorpho (vault V1) factory for this chain.
+- **New `portfolio`.** What an address holds at one block: ETH, WETH, USDG, cbBTC, all official Robinhood Stock Tokens (203 at release), tokens that reached it in the last 24 hours (Transfer logs, up to 72 hours), tokens you name, and its Morpho positions and vault shares, with debt counted as negative. Prices are Holbric's own Uniswap v3/v4 quotes into USDG for a small amount; Pons V2 tokens still on their curve are quoted on the curve. Next to the total it gives a sell-everything-now total from full-size quotes, so thin pools show up. No price feed or aggregator API is asked. Tokens outside Holbric's lists are listed but not valued unless you name them.
+- **No PnL, on purpose.** An honest PnL needs the price of every token at every past transfer. The public RPC keeps no historical state, so past blocks cannot be quoted, and Holbric will not guess a cost basis. `portfolio` says this in every answer.
+- **Fix.** `pons_quote` on a bonding curve failed when no Holbric wallet existed yet: its probe address was not checksummed. It works now, and a live check covers it.
+- **Partial reads are refused.** Morpho reads go through Multicall3 at one block. Failed batches are retried twice. If any market or position read still fails, the tool says so instead of returning a partial list.
+- **Tests.** 213 checks, all passing: 126 live and 87 write simulations. All 169 earlier checks still pass. New live checks (44):
+  - the three Morpho addresses have code and are verified on Sourcify under their contract names;
+  - logged market params hash to the market id and match `idToMarketParams` on chain;
+  - listed markets, the unlisted switch and the token filter;
+  - the on-chain supply APY is within 10% of Morpho's API figure;
+  - the Safe's health factor matches a recomputation from raw `position`, `market` and oracle reads;
+  - vault shares match `convertToAssets`, and every vault returned passes `isVaultV2`;
+  - `portfolio` totals add up, debt is negative, a Pons token on its curve is valued on the curve, and the empty test wallet is $0;
+  - `portfolio` contacts no host other than the RPC and Robinhood's token list;
+  - with Morpho's API down, `morpho_markets` still answers from chain.
+
+  Nothing is signed.
+
+Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, GeckoTerminal 2.
+
+Install from the [v0.7.0 release](https://github.com/holbric/holbric/releases/tag/v0.7.0). The package is not on the npm registry yet.
+
 ## 0.6.0 — 18 November 2026
 
 28 tools across 7 projects on Robinhood Chain mainnet (chain id 4663). Every swap quote now gets a second opinion from the KyberSwap aggregator. Holbric only takes it after simulating it on mainnet.

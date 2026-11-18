@@ -29,7 +29,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 28 (got ${tools.tools.length})`, tools.tools.length === 28);
+check(`tool count is 32 (got ${tools.tools.length})`, tools.tools.length === 32);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -195,6 +195,142 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
   let fee = null; try { await kyberRoute({ tIn, tOut, amountIn }); } catch (e) { fee = e.message; }
   check(`a KyberSwap route carrying a fee is refused (${fee})`, /extra fee/.test(fee || ""));
   globalThis.fetch = realFetch;
+}
+
+// ---- 0.7.0: Morpho (read-only) and portfolio --------------------------------------------------------------------------
+{
+  const { getAddress, keccak256, encodeAbiParameters, parseAbi } = await import("viem");
+  const { publicClient: pc } = await import("../src/chain.js");
+  const { sourcify } = await import("../src/tokeninfo.js");
+  const M = await import("../src/morpho.js");
+  const c = pc();
+  // Real public positions on Robinhood Chain mainnet, found through Morpho's own CreateMarket logs and position reads.
+  const SAFE = "0x498752D5fa0600CBd613074C151Abe15B3FeC7CB"; // a Safe borrowing USDG against official stock tokens
+  const NVDA_MKT = "0x8b16891f032a93b771347c9cb470a780e6699dd701553d3402aa3cdba6189c3e"; // NVDA collateral / USDG loan, LLTV 62.5%
+  const NVDA = "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC";
+  for (const [a, name] of [[M.MORPHO, "Morpho"], [M.ADAPTIVE_IRM, "AdaptiveCurveIrm"], [M.VAULT_V2_FACTORY, "VaultV2Factory"]]) {
+    const [code, sf] = await Promise.all([c.getCode({ address: a }), sourcify(a)]);
+    check(`${name} ${a} (Morpho's address registry) has code and is verified on Sourcify as ${name} (${sf.match})`, code && code.length > 2 && ["match", "exact_match"].includes(sf.match) && sf.contractName === name);
+  }
+  const latest = await c.getBlockNumber();
+  const markets = await M.allMarkets(latest);
+  check(`CreateMarket logs on Morpho Blue give ${markets.length} markets`, markets.length >= 500);
+  const P = { type: "tuple", components: [{ name: "loanToken", type: "address" }, { name: "collateralToken", type: "address" }, { name: "oracle", type: "address" }, { name: "irm", type: "address" }, { name: "lltv", type: "uint256" }] };
+  const ab = parseAbi(["function idToMarketParams(bytes32) view returns (address,address,address,address,uint256)"]);
+  const sample = [markets.find((m) => m.id === NVDA_MKT), markets[1], markets[markets.length - 1]];
+  let same = true;
+  for (const m of sample) {
+    const on = await c.readContract({ address: M.MORPHO, abi: ab, functionName: "idToMarketParams", args: [m.id] });
+    const idOk = keccak256(encodeAbiParameters([P], [m.params])) === m.id;
+    same &&= idOk && getAddress(on[0]) === getAddress(m.params.loanToken) && getAddress(on[1]) === getAddress(m.params.collateralToken) && getAddress(on[2]) === getAddress(m.params.oracle) && on[4] === m.params.lltv;
+  }
+  check("logged market params hash to the market id and match idToMarketParams on chain (3 markets)", same);
+
+  const mk = JSON.parse(await call("morpho_markets", { limit: 8 }));
+  check(`morpho_markets lists Morpho-app-listed markets read at block ${mk.block} (${mk.matching} of ${mk.marketsOnChain})`, mk.morphoApi.status === "ok" && mk.matching >= 10 && mk.markets.every((x) => x.listedInMorphoApp === true));
+  check("morpho_markets: largest market lends USDG (0x5fc5...) and rows are sorted by size", getAddress(mk.markets[0].loanToken.address) === "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" && mk.markets.every((x, i) => i === 0 || (mk.markets[i - 1].approxSupplyUsd ?? -1) >= (x.approxSupplyUsd ?? -1)));
+  check("morpho_markets: utilization within 0-100% and supply APY at or below borrow APY", mk.markets.every((x) => x.utilizationPct >= 0 && x.utilizationPct <= 100 && x.supplyApyPct <= x.borrowApyPct + 1e-9));
+  {
+    const r = await fetch(M.MORPHO_API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: `{ marketById(marketId: "${mk.markets[0].marketId}", chainId: 4663) { state { supplyApy borrowApy } } }` }) }).then((r) => r.json()).catch(() => null);
+    const st = r?.data?.marketById?.state;
+    check(`supply APY computed on chain (${mk.markets[0].supplyApyPct}%) is within 10% of Morpho's API figure (${st ? (st.supplyApy * 100).toFixed(3) : "n/a"}%)`, st && Math.abs(mk.markets[0].supplyApyPct - st.supplyApy * 100) <= 0.1 * st.supplyApy * 100 + 0.01);
+  }
+  const mu = JSON.parse(await call("morpho_markets", { includeUnlisted: true, limit: 3 }));
+  check(`includeUnlisted shows more markets (${mu.matching} > ${mk.matching})`, mu.matching > mk.matching);
+  const mn = JSON.parse(await call("morpho_markets", { collateralToken: NVDA, includeUnlisted: true, limit: 20 }));
+  check(`collateralToken filter: ${mn.matching} NVDA-collateral markets, all with NVDA ${NVDA}`, mn.matching >= 1 && mn.markets.every((x) => getAddress(x.collateralToken.address) === NVDA && x.collateralToken.holbric === "official Robinhood Stock Token"));
+
+  const pos = JSON.parse(await call("morpho_position", { address: SAFE }));
+  const np = pos.positions.find((p) => p.marketId === NVDA_MKT);
+  check(`morpho_position finds the Safe's NVDA/USDG position at block ${pos.block}: borrowed ${np?.borrowed}, collateral ${np?.collateral}, health factor ${np?.healthFactor}`, np && BigInt(np.raw.borrowedAssets) > 0n && BigInt(np.raw.collateral) > 0n && np.healthFactor > 0);
+  {
+    // Independent check: recompute the health factor from raw position, market and oracle reads at the same block.
+    const B = BigInt(pos.block);
+    const mAbi = parseAbi(["function market(bytes32) view returns (uint128,uint128,uint128,uint128,uint128,uint128)", "function position(bytes32,address) view returns (uint256,uint128,uint128)"]);
+    const [mm, pp, price] = await Promise.all([
+      c.readContract({ address: M.MORPHO, abi: mAbi, functionName: "market", args: [NVDA_MKT], blockNumber: B }),
+      c.readContract({ address: M.MORPHO, abi: mAbi, functionName: "position", args: [NVDA_MKT, SAFE], blockNumber: B }),
+      c.readContract({ address: markets.find((m) => m.id === NVDA_MKT).params.oracle, abi: parseAbi(["function price() view returns (uint256)"]), functionName: "price", blockNumber: B }),
+    ]);
+    const debtNoAccrual = (pp[1] * (mm[2] + 1n)) / (mm[3] + 10n ** 6n);
+    const hf = Number((((pp[2] * price) / 10n ** 36n) * 625000000000000000n / 10n ** 18n) * 10n ** 9n / debtNoAccrual) / 1e9;
+    check(`health factor matches raw reads (${hf.toFixed(4)} without accrual vs ${np.healthFactor} with interest to the block)`, Math.abs(hf - np.healthFactor) / hf < 0.001 && np.healthFactor <= hf + 1e-4);
+    check(`status matches the health factor (${np.status}); liquidation price ${np.liquidationPrice} is below the oracle price ${np.oraclePrice}`, (np.healthFactor >= 1) === !/LIQUIDATABLE/.test(np.status) && (np.healthFactor < 1 || np.liquidationDropPct > 0));
+  }
+  const vp = pos.vaultPositions[0];
+  if (vp) {
+    const onAssets = await c.readContract({ address: vp.vault, abi: parseAbi(["function balanceOf(address) view returns (uint256)", "function convertToAssets(uint256) view returns (uint256)"]), functionName: "convertToAssets",
+      args: [await c.readContract({ address: vp.vault, abi: parseAbi(["function balanceOf(address) view returns (uint256)"]), functionName: "balanceOf", args: [SAFE] })] });
+    check(`Vault V2 shares: ${vp.shares} ${vp.symbol} = ${vp.assets}, same as convertToAssets on chain (${onAssets})`, vp.assets.startsWith(String(Number(onAssets) / 1e6).split(".")[0]));
+  } else check("Vault V2 shares: none held (no vault check)", true);
+  const one = JSON.parse(await call("morpho_position", { address: SAFE, marketId: NVDA_MKT }));
+  check("morpho_position with marketId reads only that market", one.marketsChecked === 1 && one.positions.length === 1 && one.positions[0].marketId === NVDA_MKT);
+  const none = JSON.parse(await call("morpho_position"));
+  check("morpho_position on the empty test wallet: no positions, every market checked", none.positions.length === 0 && none.vaultPositions.length === 0 && none.marketsChecked >= 500 && /No Morpho Blue position/.test(none.summary));
+  await call("morpho_position", { address: SAFE, marketId: "0x1234" }, /32-byte market id/);
+  await call("morpho_position", { address: SAFE, marketId: "0x" + "ab".repeat(32) }, /No Morpho Blue market with id/);
+
+  const vs = JSON.parse(await call("morpho_vaults", { limit: 6 }));
+  let allV2 = true;
+  for (const v of vs.vaults) allV2 &&= await c.readContract({ address: M.VAULT_V2_FACTORY, abi: parseAbi(["function isVaultV2(address) view returns (bool)"]), functionName: "isVaultV2", args: [v.vault] });
+  check(`morpho_vaults: ${vs.vaultsCreated} vaults from the factory, top ${vs.vaults.length} all confirmed by isVaultV2 and sorted by size (largest ${vs.vaults[0]?.name}, ${vs.vaults[0]?.totalAssets})`, vs.vaultsCreated >= 50 && vs.vaults.length > 0 && allV2 && vs.vaults.every((x, i) => i === 0 || vs.vaults[i - 1].approxUsd >= x.approxUsd));
+  const vu = JSON.parse(await call("morpho_vaults", { asset: "USDG", limit: 3 }));
+  check("morpho_vaults asset filter returns only USDG vaults", vu.vaults.length > 0 && vu.vaults.every((v) => v.asset.symbol === "USDG" && getAddress(v.asset.address) === "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"));
+
+  const pf = JSON.parse(await call("portfolio", { address: SAFE }));
+  const sumOk = Math.abs(pf.totals.walletUsd + pf.totals.morphoNetUsd - pf.totals.totalUsd) < 0.05;
+  check(`portfolio of the Safe at block ${pf.block}: wallet $${pf.totals.walletUsd} + Morpho net $${pf.totals.morphoNetUsd} = $${pf.totals.totalUsd} (${pf.totals.totalEth} ETH)`, sumOk && pf.totals.complete && pf.holdings.length > 0);
+  check("portfolio: stock tokens are recognised and valued, Morpho debt counts as negative", pf.holdings.some((h) => h.holbric === "official Robinhood Stock Token" && h.valueUsd > 0) && pf.morpho.lines.some((l) => /debt/.test(l.position) && l.valueUsd < 0));
+  check("portfolio: sell-everything-now total is at or below the quoted total, and PnL is declared not included", pf.totals.totalIfSoldNowUsd <= pf.totals.totalUsd + 1 && /PnL is not included/.test(pf.pnl));
+  check(`portfolio: checked ${pf.discovery.checked.split(":")[0]} plus Transfer logs (${pf.discovery.transferLogs.requests} requests, 0 failed)`, pf.discovery.transferLogs.failedRequests === 0 && /203|2\d\d official Robinhood Stock Tokens/.test(pf.discovery.checked));
+  const pe = JSON.parse(await call("portfolio", { lookbackHours: 1 }));
+  check("portfolio of the empty test wallet is $0 and complete", pe.totals.totalUsd === 0 && pe.totals.complete && pe.holdings.length === 0);
+  await call("portfolio", { address: SAFE, lookbackHours: 100 }, /72|lookbackHours|too_big|less than or equal/i);
+  // A Pons V2 token still on its curve, valued on the curve: the launch's own curve holds its token.
+  let curveCase = null;
+  {
+    const rec = JSON.parse(await call("pons_recent_launches", { hours: 48, limit: 30 }));
+    for (const l of rec.launches) {
+      const st = JSON.parse((await client.callTool({ name: "pons_token", arguments: { token: l.token } })).content[0].text);
+      if (st.status === "bonding curve" && st.progressPct >= 1) { curveCase = l; break; } // a curve with real buys, so a sell quote exists
+    }
+    if (curveCase) {
+      const pp = JSON.parse(await call("portfolio", { address: curveCase.curve, tokens: [curveCase.token], lookbackHours: 0, includeMorpho: false }));
+      const h = pp.holdings.find((x) => getAddress(x.token) === getAddress(curveCase.token));
+      check(`portfolio values a named Pons V2 token on its curve (${curveCase.symbol}, held by its curve ${curveCase.curve}): ${h ? `${h.amount} at $${h.priceUsd} via ${h.priceFrom}` : "not held"}`, h && h.holbric === "Pons V2 launch" && h.priceUsd > 0 && /Pons V2 bonding curve/.test(h.priceFrom));
+    } else check("no Pons launch on its curve with 1% progress in the last 48 h (curve valuation not exercised)", true);
+  }
+  // pons_quote without a Holbric wallet uses a probe address (0.6.0 had it mis-checksummed, so this failed).
+  {
+    const { ponsQuote } = await import("../src/pons.js");
+    const ks = await import("../src/keystore.js");
+    const saved = process.env.HOLBRIC_HOME; process.env.HOLBRIC_HOME = mkdtempSync(join(tmpdir(), "holbric-nowallet-"));
+    const tok = curveCase?.token;
+    let msg = "ok"; if (tok) { try { await ponsQuote({ token: tok, side: "buy", amount: "0.001" }); } catch (e) { msg = e.message; } }
+    const noWallet = ks.walletAddress() === null;
+    process.env.HOLBRIC_HOME = saved;
+    check(`pons_quote on a curve works with no Holbric wallet (probe address): ${tok ? msg.slice(0, 80) : "no curve launch found, not exercised"}`, noWallet && msg === "ok");
+  }
+  // In-process: what portfolio and morpho_position send off-chain, and the Morpho API being down.
+  {
+    const { portfolio } = await import("../src/portfolio.js");
+    const realFetch = globalThis.fetch;
+    const hosts = []; let down = false;
+    globalThis.fetch = async (url, init) => { const h = new URL(String(url)).host; hosts.push(h); if (down && h === "api.morpho.org") throw new TypeError("fetch failed"); return realFetch(url, init); };
+    await portfolio({ address: SAFE, lookbackHours: 1 });
+    const rpcHost = new URL((await import("../src/chain.js")).rpcUrl()).host;
+    const offChain = [...new Set(hosts)].filter((h) => h !== "api.robinhood.com" && h !== rpcHost);
+    check(`portfolio asks no price feed or aggregator: hosts other than the RPC and Robinhood's token list = [${offChain.join(", ")}]`, offChain.length === 0 && hosts.includes(rpcHost));
+    hosts.length = 0;
+    await M.morphoPosition({ address: SAFE, marketId: NVDA_MKT });
+    check("morpho_position reads only the chain (no API call)", hosts.filter((h) => h === "api.morpho.org").length === 0);
+    down = true;
+    await new Promise((r) => setTimeout(r, 10)); // cache is per process; force a fresh API read by importing a fresh copy
+    const fresh = await import("../src/morpho.js?down=" + Date.now());
+    const md = await fresh.morphoMarkets({ limit: 5 });
+    check(`Morpho API down: morpho_markets still answers from chain, known tokens only (${md.matching} markets; ${md.morphoApi.status})`, md.morphoApi.status === "unavailable" && md.matching > 0 && md.markets.every((x) => x.loanToken.holbric !== "not in Holbric's lists" && x.collateralToken.holbric !== "not in Holbric's lists"));
+    globalThis.fetch = realFetch;
+  }
 }
 await client.close();
 console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);

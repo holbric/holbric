@@ -2,20 +2,21 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.6.0 covers 7 projects with 28 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.7.0 covers 8 projects with 32 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
-| Wallet (Robinhood Chain) | Show its address and balances, look up any token, send ETH or ERC-20s, wrap and unwrap WETH | `wallet_address`, `chain_status`, `get_balances`, `token_info`, `prepare_send`, `prepare_wrap_eth`, `prepare_unwrap_weth`, `execute_prepared` |
+| Wallet (Robinhood Chain) | Show its address and balances, value any address's holdings and Morpho positions at one block, look up any token, send ETH or ERC-20s, wrap and unwrap WETH | `wallet_address`, `chain_status`, `get_balances`, `portfolio`, `token_info`, `prepare_send`, `prepare_wrap_eth`, `prepare_unwrap_weth`, `execute_prepared` |
 | Uniswap v3 and v4 | Find the best route across v3 and v4 (direct pools, or 2 hops through WETH, ETH, USDG or cbBTC), quote it, and swap; list v4 pools for a pair and quote on v4 alone | `quote_swap`, `find_route`, `prepare_swap`, `v4_pools`, `quote_v4` |
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
 | KyberSwap aggregator | Holbric's own route against KyberSwap's for the same swap, side by side at one block. KyberSwap's output only counts after its router call is simulated on mainnet. `quote_swap`, `find_route` and `prepare_swap` use it too | `compare_quotes` |
+| Morpho | Read lending markets (rates, utilization, liquidity, oracle price), any address's positions with health factor and liquidation price, and Vault V2 vaults. Read-only | `morpho_markets`, `morpho_position`, `morpho_vaults` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -49,7 +50,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.6.0/holbric-0.6.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.7.0/holbric-0.7.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -105,6 +106,10 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | KyberSwap MetaAggregationRouterV2 | `0x6131B5fae19EA4f9D964eAc0408E4408b66337b5` (docs.kyberswap.com, Contracts & Addresses, Robinhood (ChainID: 4663); exact match on Sourcify: MetaAggregationRouterV2). The only router Holbric accepts from KyberSwap |
 | KyberSwap AggregationExecutorProxy | `0x8F10B468b06c6FD214B65F87778827F7D113f996` (same docs page). The only executor Holbric accepts in KyberSwap calldata |
 | KyberSwap API | `https://aggregator-api.kyberswap.com/robinhood/api/v1` (`/routes`, `/route/build`), third party |
+| Morpho Blue | `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010` (Morpho's address registry, `RobinhoodMainnet = 4663`; verified on Sourcify: Morpho) |
+| Morpho AdaptiveCurveIrm / VaultV2Factory | `0x2BD3d5965B26B51814AC95127B2b80dD6CcC0fa1` / `0x0FBad98595b0186dA120E41f77C102beb49f803c` (same registry; verified on Sourcify) |
+| Morpho API | `https://api.morpho.org/graphql`, third party: only the market listing flag and vault APY. No address is sent |
+| Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` (batched reads at one block) |
 | Market data | `https://api.geckoterminal.com/api/v2/networks/robinhood` |
 | Verification | `https://sourcify.dev/server/v2/contract/4663/<address>` |
 
@@ -149,6 +154,24 @@ KyberSwap runs an aggregator on Robinhood Chain (chain slug `robinhood` in its A
 - **Privacy.** KyberSwap is a third-party API. A quote sends the two token addresses and the amount. `prepare_swap` also sends your wallet address as sender and recipient, but only when KyberSwap's quote is ahead. To turn it off, set `HOLBRIC_NO_AGGREGATORS=1` in the MCP server's environment, or run `holbric aggregators off`. `chain_status` shows whether it is on.
 - **No fees.** Holbric sends no fee or referral fields to KyberSwap. KyberSwap's request header and `source` field say `holbric`.
 
+### Morpho (read-only)
+
+Addresses come from Morpho's own registry, [`packages/morpho-ts/src/addresses.ts`](https://github.com/morpho-org/sdks/blob/main/packages/morpho-ts/src/addresses.ts) in morpho-org/sdks. Morpho Blue, the AdaptiveCurveIrm and the VaultV2Factory each have code on chain and are verified on Sourcify. The registry lists no MetaMorpho (vault V1) factory for chain 4663; vaults here are Morpho Vault V2.
+
+- **Discovery from events.** Markets come from Morpho Blue's `CreateMarket` logs and vaults from the factory's `CreateVaultV2` logs, scanned from the registry's deployment blocks in 10M-block ranges and cached.
+- **One block.** Every figure is read at one block through Multicall3: `market`, `position`, the market's oracle `price()` and the IRM's `borrowRateView`. Interest since the market's last update is added as Morpho Blue does it (Taylor compounding, fee shares). Borrow APY = e^(rate x 1 year) - 1; supply APY = borrow APY x utilization x (1 - fee).
+- **Health factor** = collateral x oracle price x LLTV / debt. Below 1 a position can be liquidated. The liquidation price is the oracle price at which the health factor reaches 1.
+- **Morpho's API** is used only for whether Morpho's app lists a market (`morpho_markets` shows listed markets by default) and for vault APY. Both are labelled. If it is down, `morpho_markets` shows only markets whose tokens are all WETH, USDG, cbBTC or official stock tokens, and `morpho_vaults` shows no APY.
+- **Partial reads are refused.** Failed batches are retried twice at the same block. If a read still fails, the tool says so rather than return a partial list.
+
+### Portfolio
+
+`portfolio` checks ETH, WETH, USDG, cbBTC, every official Robinhood Stock Token, the tokens you name, and tokens that reached the address in the last 24 hours (Transfer logs, up to 72; the public RPC allows 30,000 blocks per log request without an address). It adds the address's Morpho positions and Vault V2 shares, with debt as negative.
+
+Prices are Holbric's own best Uniswap v3/v4 quote into USDG for a small amount (1 token, or about $100 worth when 1 token is worth more). ETH and WETH use a 1 ETH quote. Pons V2 tokens still on their curve are quoted on the curve. A second, full-size quote gives the sell-everything-now value, so a thin pool shows up as a gap between the two totals. No price feed or aggregator API is asked. Tokens outside Holbric's lists are listed, not valued, unless you name them.
+
+There is no PnL. An honest one needs the price of every token at every past transfer. The public RPC keeps no historical state, and Holbric will not guess a cost basis.
+
 ### Pons creator fees
 
 Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit the fee escrow directly. Fees accrue on the launch's curve before graduation, or on the hook after it, until a sweep moves them, so the escrow balance alone can understate what a creator is owed. `pons_creator_fees` reports the escrow balance (`balanceOf` for ETH, `balanceOfToken` for ERC-20s) and the unswept fees (`quoteFeeBalance` / `creatorTaxBalance` on the curve, or `pendingFees` / `pendingCreatorTax` on the hook) separately, plus the creator's estimated share using the contract's own split.
@@ -160,7 +183,8 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 ```sh
 npm test                           # both suites below. Never signs.
 node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout,
-                                   # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, prepare refusals
+                                   # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, Morpho markets, positions and vaults
+                                   # checked against raw reads, portfolio totals, prepare refusals
 node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps included) with a throwaway wallet, simulates it on mainnet,
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
@@ -171,4 +195,4 @@ See [CHANGELOG.md](./CHANGELOG.md) and [holbric.com/changelog](https://holbric.c
 
 ## Licence
 
-MIT. Holbric is independent software. It is not affiliated with Robinhood, Uniswap, Pons, GeckoTerminal or Sourcify, and nothing here is financial advice.
+MIT. Holbric is independent software. It is not affiliated with Robinhood, Uniswap, KyberSwap, Morpho, Pons, GeckoTerminal or Sourcify, and nothing here is financial advice.

@@ -19,7 +19,7 @@ const curveAbi = parseAbi([
   "function isNativeQuote() view returns (bool)", "function launchedAt() view returns (uint256)",
   "function currentSnipeTaxBps(address) view returns (uint256)",
 ]);
-const PROBE_FROM = "0x00000000000000000000000000000000000A11CE";
+const PROBE_FROM = getAddress("0x00000000000000000000000000000000000a11ce");
 
 export async function launched(token) {
   if (!isAddress(token || "")) throw new Error("token must be a 0x contract address.");

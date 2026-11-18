@@ -1,7 +1,7 @@
 {
   "name": "holbric",
-  "version": "0.6.0",
-  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet, Uniswap v3 and v4 routing compared with the KyberSwap aggregator, Robinhood Stock Tokens, Pons (curves and graduated v4 pools), ERC-8004, GeckoTerminal. Local wallet, mainnet simulation and a yes or no before every signature.",
+  "version": "0.7.0",
+  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet and portfolio, Uniswap v3 and v4 routing compared with the KyberSwap aggregator, Morpho lending reads, Robinhood Stock Tokens, Pons (curves and graduated v4 pools), ERC-8004, GeckoTerminal. Local wallet, mainnet simulation and a yes or no before every signature.",
   "type": "module",
   "bin": {
     "holbric": "bin/holbric.js"
@@ -26,6 +26,9 @@
     "uniswap",
     "uniswap-v4",
     "kyberswap",
+    "morpho",
+    "lending",
+    "portfolio",
     "pons",
     "erc-8004",
     "stock-tokens",

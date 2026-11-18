@@ -18,6 +18,9 @@ async function load() {
   return cache;
 }
 
+/** Every official Robinhood Stock Token on chain 4663 (cached 10 minutes). */
+export async function stockList() { return (await load()).rows; }
+
 export async function findStock(x) {
   const { rows } = await load();
   if (isAddress(x)) return rows.find((r) => r.address === getAddress(x)) || null;
