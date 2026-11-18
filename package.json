@@ -1,7 +1,7 @@
 {
   "name": "holbric",
-  "version": "0.9.0",
-  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet and portfolio, Uniswap v3 and v4 routing compared with the KyberSwap aggregator, Uniswap v4 liquidity positions, Morpho lending reads, Relay bridging to Ethereum, Base, Arbitrum, OP Mainnet and Unichain, Robinhood Stock Tokens, Pons (curves and graduated v4 pools), ERC-8004, GeckoTerminal. Local wallet, mainnet simulation and a yes or no before every signature.",
+  "version": "0.10.0",
+  "description": "One MCP connection to Robinhood Chain mainnet projects: wallet and portfolio, Uniswap v3 and v4 routing compared with the KyberSwap aggregator, Uniswap v4 liquidity positions, Morpho lending (reads, supply, borrow, repay, withdraw), Relay bridging to Ethereum, Base, Arbitrum, OP Mainnet and Unichain, Robinhood Stock Tokens, Pons (curves and graduated v4 pools), ERC-8004 identity, reputation and feedback, GeckoTerminal. Local wallet, mainnet simulation and a yes or no before every signature.",
   "type": "module",
   "bin": {
     "holbric": "bin/holbric.js"

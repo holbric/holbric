@@ -2,6 +2,23 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.10.0 — 18 November 2026
+
+48 tools across 9 projects on Robinhood Chain mainnet (chain id 4663). Holbric now supplies, borrows, repays and withdraws on Morpho Blue, and gives and revokes ERC-8004 feedback. Every write is prepared, simulated on mainnet and re-simulated by `execute_prepared`; nothing is signed without a yes.
+
+- **Morpho Blue, the only contract the writes call.** `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010` is in Morpho's address registry for chain 4663 and verified on Sourcify as `Morpho`. Holbric calls it directly, with exact approvals. Writes go to markets listed in Morpho's app only; any other market needs `allowUnlisted: true` and carries a warning, because anyone can create a Morpho market with any token and any oracle.
+- **New `prepare_morpho_supply`.** Lend the loan token. The summary shows the supply rate at that block, the free liquidity and that bad debt is shared by lenders. Example at block 117223380: 5 USDG into the NVDA/USDG market (`0xf5ff7d54...db6e4c`, LLTV 62.50%), an exact 5 USDG approval to Morpho Blue, and the simulation moved exactly 5 USDG.
+- **New `prepare_morpho_borrow`.** Borrow, optionally depositing collateral in the same action. Holbric refuses if the health factor afterwards would be under 1.10, and reads it again before signing. Example at block 117223380: 1 NVDA deposited and 20 USDG borrowed, health factor 4.9632 at the oracle price 1 NVDA = 158.82220 USDG; the simulation showed -1 NVDA and +20 USDG. A borrow that would leave the health factor at 1.0449 was refused.
+- **New `prepare_morpho_repay`.** Repay an amount, or all of it by shares. A full repay approves the debt plus at most 15 minutes of interest and sets the allowance back to 0 afterwards. Simulated from public borrower `0xdf2E1913Be098d8274c87031E5c9aB8Ee4708000` (nothing signed): a full repay paid 1880.038041 USDG on a debt of 1880.038028, left zero borrow shares and an allowance of 0. Its re-check allows a 0.05% outflow slack for the interest; an outflow 1% above the preview is refused.
+- **New `prepare_morpho_withdraw`.** Withdraw supplied tokens or collateral. Withdrawing collateral while in debt follows the same 1.10 floor, and withdrawing all of it while in debt is refused. A full supply withdrawal by public supplier `0x10e614f8681D7d6ef6a7C6d97510DE870b2c526F` and a 0.1% collateral withdrawal by the borrower above both simulate and pay out.
+- **ERC-8004 feedback writes.** New `prepare_agent_feedback` calls `giveFeedback` on the reputation registry `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` (implementation verified on Sourcify as `ReputationRegistryUpgradeable`; its `getIdentityRegistry()` is the identity registry Holbric already uses). Values are decimals such as `5`, `4.5` or `-1`; `-1.25` is stored as `-125` with 2 decimals. Feedback is public, permanent and tied to the wallet. New `prepare_revoke_feedback` marks one of the wallet's entries as revoked. Unregistered agents, bad values, an http feedbackURI and feedback from an agent's own owner are refused.
+- **Relay request lookup moves to `/requests/v3`.** Relay retires `GET /requests/v2` on 24 November 2026. `/requests/v3` needs a Relay API key: set `RELAY_API_KEY` in the MCP server's environment. Holbric sends it as `x-api-key`, only to api.relay.link, and only when it is set. Without a key, `bridge_status` follows a request id through `GET /intents/status/v3` and still reads a Robinhood Chain deposit hash on chain.
+- **Tests.** 364 checks pass: 199 live and 165 write simulations. All earlier checks still pass; the `bridge_status` checks now use the v3 endpoints. New live checks cover the Morpho and ERC-8004 refusals on an empty wallet and the Morpho Blue and ERC-8004 contracts on Sourcify. New write simulations cover Morpho supply, borrow, the health-factor floor, repay (full and partial) and withdraw (supply and collateral) from real public positions, the unlisted-market refusal, and ERC-8004 feedback, revoke and their refusals. Nothing is signed.
+
+Tool count per project: Wallet 9, Uniswap 12, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 5, KyberSwap 1, Morpho 7, Relay 3, GeckoTerminal 2.
+
+Install with `npm install -g holbric`, or from the [v0.10.0 release](https://github.com/holbric/holbric/releases/tag/v0.10.0).
+
 ## 0.9.0 — 18 November 2026
 
 42 tools across 9 projects on Robinhood Chain mainnet (chain id 4663). Holbric now reads Uniswap v4 liquidity positions and quotes and prepares adding, removing and collecting fees. Everything is prepared only and simulated on mainnet; nothing is signed.

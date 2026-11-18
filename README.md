@@ -112,7 +112,7 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | KyberSwap AggregationExecutorProxy | `0x8F10B468b06c6FD214B65F87778827F7D113f996` (same docs page). The only executor Holbric accepts in KyberSwap calldata |
 | KyberSwap API | `https://aggregator-api.kyberswap.com/robinhood/api/v1` (`/routes`, `/route/build`), third party |
 | RelayDepository | `0x4cD00E387622C35bDDB9b4c962C136462338BC31` (Relay's `/chains`, `protocol.v2.depository` for chain 4663; exact match on Sourcify: RelayDepository). The only contract Holbric deposits into for a bridge |
-| Relay API | `https://api.relay.link` (`/chains`, `/quote/v2`, `/requests/v2`, `/intents/status/v3`), third party |
+| Relay API | `https://api.relay.link` (`/chains`, `/quote/v2`, `/requests/v3` with `RELAY_API_KEY`, `/intents/status/v3`), third party |
 | Morpho Blue | `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010` (Morpho's address registry, `RobinhoodMainnet = 4663`; verified on Sourcify: Morpho) |
 | Morpho AdaptiveCurveIrm / VaultV2Factory | `0x2BD3d5965B26B51814AC95127B2b80dD6CcC0fa1` / `0x0FBad98595b0186dA120E41f77C102beb49f803c` (same registry; verified on Sourcify) |
 | Morpho API | `https://api.morpho.org/graphql`, third party: only the market listing flag and vault APY. No address is sent |
