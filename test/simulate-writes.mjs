@@ -19,6 +19,7 @@ const { prepareRegisterAgent } = await import("../src/identity.js");
 const { prepareWrap, prepareUnwrap } = await import("../src/weth.js");
 const { ponsCreatorFees, preparePonsSweep, preparePonsClaim } = await import("../src/ponsfees.js");
 const { _peek, recheck, execute } = await import("../src/actions.js");
+const R = await import("../src/relay.js");
 const { _setSimOverrides, simulateTxs, simulateMethod } = await import("../src/simulate.js");
 
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
@@ -188,6 +189,76 @@ if (ext) {
   catch (e) { ok("execute refuses an unexpected transfer before signing", /^Refused before signing: an unexpected transfer/.test(e.message), e.message); }
 }
 
+// ---- Relay bridge out of Robinhood Chain (0.8.0). Real Relay quotes for this throwaway wallet; only the deposit side
+// on chain 4663 is built and simulated. Nothing is signed or sent, so Relay never sees a deposit for these orders.
+const DEPO = "0x4cD00E387622C35bDDB9b4c962C136462338BC31";
+const bridgeOk = (label, r, token, raw) => {
+  if (!r) return;
+  const outs = r.simulation.transfersOut;
+  ok(`${label}: only the deposit leaves the wallet, to the RelayDepository`, outs.length === 1 && outs[0].counterparty === DEPO && outs[0].raw === raw.toString() && outs[0].symbol === token,
+    outs.map((o) => `${o.amount} ${o.symbol} to ${o.counterparty}`).join("; "));
+  ok(`${label}: the deposit commits to the order id Holbric recomputed (${r.relay.orderId.slice(0, 18)}...)`, _peek(r.prepareId).txs.at(-1).data.toLowerCase().endsWith(r.relay.orderId.slice(2).toLowerCase()));
+};
+const b1 = await run("prepare_bridge 0.01 ETH to Base", () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" }));
+bridgeOk("bridge ETH -> Base", b1, "ETH", 10n ** 16n);
+if (b1) ok("bridge ETH -> Base pays this wallet on Base and refunds to it", b1.relay.recipient === me && /this wallet's address/.test(b1.summary) && /every refund path in the order pays this wallet/.test(b1.summary));
+const b2 = await run("prepare_bridge 25 USDG to Ethereum (USDG)", () => R.prepareBridge({ toChain: "ethereum", token: "USDG", amount: "25" }));
+bridgeOk("bridge USDG -> Ethereum", b2, "USDG", 25_000_000n);
+if (b2) { const ap = b2.simulation.approvals; ok("bridge USDG: approval is exactly 25 USDG to the RelayDepository", ap.length === 1 && ap[0].spender === DEPO && ap[0].raw === "25000000", ap.map((a) => `${a.amount} ${a.symbol} for ${a.spender}`).join("; ")); }
+const b3 = await run("prepare_bridge 25 USDG to Arbitrum One (USDC)", () => R.prepareBridge({ toChain: "arbitrum", token: "USDG", amount: "25" }));
+bridgeOk("bridge USDG -> Arbitrum", b3, "USDG", 25_000_000n);
+if (b3) ok(`bridge USDG -> Arbitrum delivers USDC (${b3.relay.expectedOut}, at least ${b3.relay.minimumOut})`, /USDC$/.test(b3.relay.expectedOut));
+const OTHER = "0x000000000000000000000000000000000000dEaD";
+const b4 = await run("prepare_bridge 0.005 ETH to OP Mainnet for a named recipient", () => R.prepareBridge({ toChain: "optimism", token: "ETH", amount: "0.005", recipient: OTHER }));
+if (b4) ok("a named recipient is flagged as not this wallet; Robinhood Chain refunds still go to the wallet", b4.relay.recipient === OTHER && /NOT this wallet/.test(b4.summary) && /a refund on Robinhood Chain pays this wallet/.test(b4.summary));
+
+// Tampered Relay answers: fetch is patched in this process to change Relay's quote before Holbric checks it.
+{
+  const realFetch = globalThis.fetch;
+  const withQuote = async (mutate, fn) => {
+    globalThis.fetch = async (url, init) => {
+      const r = await realFetch(url, init);
+      if (!String(url).includes("api.relay.link/quote/v2")) return r;
+      const q = await r.json(); mutate(q);
+      return new Response(JSON.stringify(q), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    try { return await fn(); } finally { globalThis.fetch = realFetch; }
+  };
+  const W = "0x1111111111111111111111111111111111111111";
+  const depTx = (q) => q.steps.flatMap((x) => x.items).find((i) => i.data.to.toLowerCase() === DEPO.toLowerCase()).data;
+  await run("Relay deposit sent to another contract is refused", () => withQuote((q) => { depTx(q).to = W; }, () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" })),
+    { expectError: /not the verified RelayDepository/ });
+  await run("Relay deposit crediting another depositor is refused", () => withQuote((q) => { const t = depTx(q); t.data = t.data.slice(0, 34) + W.slice(2).toLowerCase() + t.data.slice(74); }, () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" })),
+    { expectError: /deposit calldata differs/ });
+  await run("Relay order paying another recipient (order id recomputed) is refused", () => withQuote((q) => { q.protocol.v2.orderData.output.payments[0].recipient = W; q.protocol.v2.orderId = R.orderId(q.protocol.v2.orderData); },
+    () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" })), { expectError: /output goes to 0x1111/ });
+  await run("Relay order with an app fee is refused", () => withQuote((q) => { q.protocol.v2.orderData.fees.push({ recipientChainId: "base", recipient: W, currencyChainId: "base", currency: "0x0000000000000000000000000000000000000000", amount: "1000" }); q.protocol.v2.orderId = R.orderId(q.protocol.v2.orderData); },
+    () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" })), { expectError: /fees to a third party/ });
+  await run("Relay unlimited USDG approval is refused", () => withQuote((q) => { const a = q.steps.find((x) => x.id === "approve").items[0].data; a.data = a.data.slice(0, 74) + "f".repeat(64); },
+    () => R.prepareBridge({ toChain: "ethereum", token: "USDG", amount: "25" })), { expectError: /not an exact approval/ });
+  // /chains naming a different depository for Robinhood Chain.
+  R._resetChainsCache();
+  globalThis.fetch = async (url, init) => {
+    const r = await realFetch(url, init);
+    if (!String(url).endsWith("api.relay.link/chains")) return r;
+    const d = await r.json(); d.chains.find((x) => x.id === 4663).protocol.v2.depository = W;
+    return new Response(JSON.stringify(d), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await run("Relay /chains naming another depository is refused", () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" }), { expectError: /not the verified RelayDepository/ });
+  globalThis.fetch = realFetch; R._resetChainsCache();
+}
+// execute_prepared refuses before signing when Relay's order deadline is too close.
+{
+  const b = await run("prepare_bridge for the deadline check", () => R.prepareBridge({ toChain: "base", token: "ETH", amount: "0.01" }));
+  if (b) {
+    const at = new Date(b.relay.orderDeadline).getTime();
+    _peek(b.prepareId).expiresAt = at + 3_600_000; // keep the preview alive at the pretend time; only the deadline check is tested
+    const realNow = Date.now; Date.now = () => at;
+    try { await execute({ prepareId: b.prepareId, confirm: true }); ok("execute refuses an order past its deadline", false, "it did not refuse"); }
+    catch (e) { ok("execute refuses a Relay order at its deadline, before signing", /^Refused before signing: Relay's order deadline/.test(e.message), e.message); }
+    finally { Date.now = realNow; }
+  }
+}
 // Read-only: the real HOLBRIC creator fee position, and what a claim and a sweep by the real creator would do.
 // eth_simulateV1 needs no signature; nothing is signed or sent.
 const fees = await ponsCreatorFees({ curve: HOLBRIC_CURVE, recipient: CREATOR });

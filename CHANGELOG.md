@@ -2,6 +2,49 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.8.0 — 18 November 2026
+
+35 tools across 9 projects on Robinhood Chain mainnet (chain id 4663). Holbric now bridges through Relay: quotes in both directions, a checked and simulated deposit for bridging out, and status for any Relay request.
+
+- **Relay, verified first.** Relay's `/chains` lists Robinhood Chain (4663, protocol id `robinhood`) with ETH and USDG bridgeable and the RelayDepository `0x4cD00E387622C35bDDB9b4c962C136462338BC31`. That contract has code on chain and is an exact match on Sourcify as `RelayDepository`. Holbric pins it and refuses if `/chains` ever names another depository. Chains on the other side: Ethereum, Base, Arbitrum One, OP Mainnet and Unichain. ETH bridges to ETH; USDG bridges to USDG on Ethereum and to USDC elsewhere.
+- **New `bridge_quote`.** Works in both directions. Returns Relay's expected output, guaranteed minimum (your slippage limit, default 0.5%), fee breakdown, total cost and time estimate, with the Robinhood Chain block. Labelled as Relay's figures. Example at block 117071566: 0.1 ETH from Robinhood Chain to Base, expected 0.099868739236507417 ETH, at least 0.09936939554032488 ETH, relayer fee 0.000131260763492583 ETH, Relay's estimate 1 second. At block 117071571, 100 USDG to Ethereum: expected 99.936242 USDG, at least 99.436561 USDG.
+- **Relay's order is checked, not trusted.** Holbric follows Relay's input-validation guide. It recomputes the order id from the order data (EIP-712 `hashStruct`, the same types as Relay's settlement SDK; matched the SDK and Relay on 10 live quotes during development). Then it checks the order:
+  - it pays exactly the token and amount asked, on Robinhood Chain;
+  - one output, to the recipient, in the token asked, on the chain asked;
+  - the guaranteed minimum is within the slippage limit;
+  - no destination calls and no fees to anyone;
+  - refunds on Robinhood Chain pay the wallet;
+  - the deadline is ahead.
+- **New `prepare_bridge`, out of Robinhood Chain only.** It builds an exact USDG approval when needed, then `depositNative` or `depositErc20` on the RelayDepository. Holbric encodes the deposit itself, with the wallet as depositor and the verified order id. It refuses if Relay's calldata differs by one byte, or if Relay asks for any other target or step. The recipient is the wallet's own address unless the user names another one; the summary then says NOT this wallet. The deposit is simulated on mainnet and must show exactly the deposit amount leaving to the depository, nothing else. `execute_prepared` re-simulates, and also refuses when Relay's order deadline is near.
+- **What is not simulated.** The delivery on the other chain is done afterwards by Relay's solver. If it does not fill, Relay refunds to the wallet on Robinhood Chain, less refund gas. Holbric always sets `refundTo`.
+- **Bridging in is quote-only.** Bridging into Robinhood Chain starts with a transaction on the other chain. Holbric only reads and simulates Robinhood Chain, so it does not build that transaction, and `bridge_quote` says so.
+- **New `bridge_status`.** Takes a request id or a transaction hash. Returns Relay's status, the deposit and fill transactions with explorer links, amounts, and failure or refund reasons. For a deposit on Robinhood Chain it also reads the receipt and decodes the RelayDepository event: sender, depositor, amount and order id.
+- **Privacy and opt-out.** Relay is a third-party API:
+  - `bridge_quote` sends the chains, tokens and amount, and quotes for a placeholder address, not your wallet;
+  - `prepare_bridge` sends the wallet address (sender and refund address) and the recipient;
+  - `bridge_status` sends the id or hash you ask about.
+
+  To turn it off, set `HOLBRIC_NO_BRIDGES=1` or run `holbric bridges off`; the bridge tools then refuse and nothing is sent. `chain_status` shows the setting.
+- **No fees.** Relay's fees are inside its quote and shown. No Holbric fee, no app fee, no referrer.
+- **Fix.** `portfolio` now values Pons V2 tokens on a curve paired with a token other than ETH, such as a Robinhood Stock Token. The curve quote goes into the pair token, then Holbric's own quote takes that into USDG. Before, such a token showed no price.
+- **Tests.** 280 checks, all passing: 166 live and 114 write simulations. All 213 earlier checks still pass. New live checks (40):
+  - the depository's code and Sourcify match, and Relay's `/chains` entry;
+  - quotes out to Base, Ethereum and Arbitrum One, and in from Base;
+  - refusals for unsupported chains and tokens;
+  - `bridge_status` on the latest finished Relay request out of Robinhood Chain, by hash and by id, against the on-chain deposit event;
+  - the local order id against Relay's;
+  - ten tampered orders, each refused;
+  - no wallet address in quotes, both opt-outs, and the API being down.
+
+  New write simulations (27):
+  - deposits of ETH to Base, USDG to Ethereum, USDG to Arbitrum One, and ETH to a named recipient on OP Mainnet;
+  - six tampered Relay answers, each refused: wrong target, wrong depositor, wrong recipient, an app fee, an unlimited approval, another depository in `/chains`;
+  - `execute_prepared` refusing at the order deadline.
+
+  Nothing is signed.
+
+Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, Relay 3, GeckoTerminal 2.
+
 ## 0.7.0 — 18 November 2026
 
 32 tools across 8 projects on Robinhood Chain mainnet (chain id 4663). Holbric now reads Morpho lending and values a whole wallet. Everything new in this release is read-only: no new write tools.

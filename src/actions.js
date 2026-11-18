@@ -48,7 +48,7 @@ export function minReceiveReason(sim, m) {
   return `the wallet would receive ${fmt(got, m.decimals, 18)} ${m.symbol}, below the minimum output of ${fmt(m.amount, m.decimals, 18)} ${m.symbol}`;
 }
 
-export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt, slippageBps, valueLine, minReceive }) {
+export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt, slippageBps, valueLine, minReceive, beforeSign }) {
   sweep();
   const c = publicClient();
   const ethBal = await c.getBalance({ address: from });
@@ -66,7 +66,7 @@ export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt
   const limit = loadConfig().dailyLimitUsd;
   const id = "hp_" + randomBytes(6).toString("hex");
   const expiresAt = Date.now() + TTL_MS;
-  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt, sim, slippageBps: slip, minReceive });
+  pending.set(id, { id, kind, from, txs, usd, expiresAt, onReceipt, sim, slippageBps: slip, minReceive, beforeSign });
   const summary = [
     `From wallet ${from} on Robinhood Chain mainnet (chain id ${CHAIN_ID}).`,
     ...lines.map((s, i) => `${i + 1}. ${s}`),
@@ -82,7 +82,7 @@ export async function store({ kind, from, txs, lines, usd, extra = {}, onReceipt
 /** Re-simulate a prepared action and compare with its preview. Returns { ok, reason, simulation }. Never signs. */
 export async function recheck(p) {
   const sim = await simulateTxs(p.from, p.txs);
-  const reason = compareSims(p.sim, sim, p.slippageBps) || minReceiveReason(sim, p.minReceive);
+  const reason = compareSims(p.sim, sim, p.slippageBps) || minReceiveReason(sim, p.minReceive) || (p.beforeSign ? p.beforeSign() : null);
   return { ok: !reason, reason, simulation: simView(sim) };
 }
 
@@ -112,6 +112,9 @@ export async function execute({ prepareId, confirm }) {
   out.result = "Confirmed on Robinhood Chain mainnet.";
   return out;
 }
+
+/** Drop a prepared action (used when a check after the simulation fails). */
+export const discard = (id) => pending.delete(id);
 
 /** In-process inspection for tests only (not exposed as a tool). */
 export const _peek = (id) => pending.get(id);

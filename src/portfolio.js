@@ -43,8 +43,16 @@ async function sellUsd(meta, amount, ethUsd) {
     if (meta.kind === "pons-v2-launch") {
       try {
         const p = await ponsQuote({ token: meta.address, side: "sell", amount: human });
-        if (!/ ETH$/.test(p.amountOut)) throw new Error("pair is not ETH");
-        return { usd: Number(formatUnits(BigInt(p.amountOutRaw), 18)) * ethUsd, by: `Pons V2 ${p.phase === "graduated" ? "pool" : "bonding curve"}, then x ETH price` };
+        const stage = `Pons V2 ${p.phase === "graduated" ? "pool" : "bonding curve"}`;
+        if (/ ETH$/.test(p.amountOut)) return { usd: Number(formatUnits(BigInt(p.amountOutRaw), 18)) * ethUsd, by: `${stage}, then x ETH price` };
+        // Launches paired with another token (USDG or, for example, a Robinhood Stock Token): value the pair-token output
+        // with Holbric's own Uniswap v3/v4 quote into USDG.
+        if (!p.pairToken || p.pairToken === "ETH") throw new Error("unknown pair");
+        const pairSym = p.amountOut.split(" ").pop();
+        if (getAddress(p.pairToken) === ADDR.USDG) return { usd: Number(formatUnits(BigInt(p.amountOutRaw), 6)), by: `${stage} into USDG` };
+        const pd = await publicClient().readContract({ address: p.pairToken, abi: erc20Abi, functionName: "decimals" });
+        const pq = await quote({ tokenIn: p.pairToken, tokenOut: "USDG", amount: formatUnits(BigInt(p.amountOutRaw), Number(pd)) });
+        return { usd: Number(formatUnits(pq.best.amountOut, 6)), by: `${stage} into ${pairSym}, then ${pq.view.route}` };
       } catch {}
     }
     return { usd: null, by: "no Uniswap v3/v4 route quoted it" };

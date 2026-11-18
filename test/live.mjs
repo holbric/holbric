@@ -29,7 +29,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 32 (got ${tools.tools.length})`, tools.tools.length === 32);
+check(`tool count is 35 (got ${tools.tools.length})`, tools.tools.length === 35);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -331,6 +331,104 @@ check("quote_swap venue native does not ask KyberSwap", qn.kyberswap?.status ===
     check(`Morpho API down: morpho_markets still answers from chain, known tokens only (${md.matching} markets; ${md.morphoApi.status})`, md.morphoApi.status === "unavailable" && md.matching > 0 && md.markets.every((x) => x.loanToken.holbric !== "not in Holbric's lists" && x.collateralToken.holbric !== "not in Holbric's lists"));
     globalThis.fetch = realFetch;
   }
+}
+// ---- Relay bridging (0.8.0). Read-only quotes and status over MCP, plus in-process checks of the order verification.
+{
+  const DEPO = "0x4cD00E387622C35bDDB9b4c962C136462338BC31";
+  const { publicClient } = await import("../src/chain.js");
+  const code = await publicClient().getCode({ address: DEPO });
+  check(`RelayDepository ${DEPO} has code on chain 4663 (${(code?.length - 2) / 2} bytes)`, !!code && code.length > 2);
+  const sf = await (await fetch(`https://sourcify.dev/server/v2/contract/4663/${DEPO}?fields=compilation`)).json();
+  check(`RelayDepository is an exact match on Sourcify as ${sf.compilation?.name}`, sf.match === "exact_match" && sf.compilation?.name === "RelayDepository");
+  const { chains } = await (await fetch("https://api.relay.link/chains")).json();
+  const rh = chains.find((x) => x.id === 4663);
+  check(`Relay /chains lists Robinhood Chain 4663 (protocol id ${rh?.protocol?.v2?.chainId}, depository ${rh?.protocol?.v2?.depository}, ETH + USDG)`,
+    rh && !rh.disabled && rh.depositEnabled && rh.vmType === "evm" && rh.protocol.v2.chainId === "robinhood" && rh.protocol.v2.depository.toLowerCase() === DEPO.toLowerCase()
+    && rh.solverCurrencies.some((t) => t.symbol === "ETH") && rh.solverCurrencies.some((t) => t.symbol === "USDG"));
+  const cs = JSON.parse(await call("chain_status"));
+  check("chain_status shows the Relay switch", /^Relay on/.test(cs.bridges));
+  const q1 = JSON.parse(await call("bridge_quote", { toChain: "base", token: "ETH", amount: "0.01" }));
+  check(`bridge_quote 0.01 ETH Robinhood Chain -> Base: order verified, expected ${q1.expectedOut}, min ${q1.minimumOut}, ${q1.timeEstimateSeconds} s, block ${q1.robinhoodBlock}`,
+    q1.orderCheck.passed && BigInt(q1.expectedOutRaw) > BigInt(q1.minimumOutRaw) && BigInt(q1.minimumOutRaw) >= (BigInt(q1.expectedOutRaw) * 9950n) / 10000n
+    && BigInt(q1.expectedOutRaw) < 10n ** 16n && q1.fees.holbric === "none" && q1.fees.app.usd === 0 && /^Yes/.test(q1.canPrepare));
+  const q2 = JSON.parse(await call("bridge_quote", { toChain: "ethereum", token: "USDG", amount: "100" }));
+  check(`bridge_quote 100 USDG -> Ethereum defaults to USDG there (${q2.expectedOut})`, q2.orderCheck.passed && /USDG$/.test(q2.expectedOut) && /Ethereum \(1\)/.test(q2.to));
+  const q3 = JSON.parse(await call("bridge_quote", { toChain: 42161, token: "USDG", amount: "100" }));
+  check(`bridge_quote 100 USDG -> Arbitrum One defaults to USDC (${q3.expectedOut})`, q3.orderCheck.passed && /USDC$/.test(q3.expectedOut));
+  const q4 = JSON.parse(await call("bridge_quote", { fromChain: "base", toChain: "robinhood", token: "ETH", amount: "0.01" }));
+  check(`bridge_quote Base -> Robinhood Chain is quote-only (${q4.expectedOut})`, q4.orderCheck.passed && /^No\./.test(q4.canPrepare) && /Robinhood Chain \(4663\)/.test(q4.to));
+  await call("bridge_quote", { toChain: "solana", token: "ETH", amount: "0.01" }, /Unsupported chain/);
+  await call("bridge_quote", { fromChain: "base", toChain: "arbitrum", amount: "0.01" }, /One side must be Robinhood Chain/);
+  await call("bridge_quote", { toChain: "base", token: "ETH", toToken: "USDC", amount: "0.01" }, /ETH to ETH and stablecoins to stablecoins/);
+  await call("prepare_bridge", { toChain: "base", token: "ETH", amount: "0.001" }, /not enough for the network fee/);
+  await call("prepare_bridge", { toChain: "robinhood", token: "ETH", amount: "0.001" }, /same chain/);
+
+  // bridge_status on the most recent finished Relay request out of Robinhood Chain to one of Holbric's chains.
+  const recent = (await (await fetch("https://api.relay.link/requests/v2?originChainId=4663&limit=50")).json()).requests
+    .find((r) => r.status === "success" && [1, 8453, 42161, 10, 130].includes(r.data?.metadata?.currencyOut?.currency?.chainId)
+      && ["ETH", "USDG"].includes(r.data?.metadata?.currencyIn?.currency?.symbol) && r.data?.inTxs?.[0]?.chainId === 4663);
+  if (recent) {
+    const byHash = JSON.parse(await call("bridge_status", { txHash: recent.data.inTxs[0].hash }));
+    const byId = JSON.parse(await call("bridge_status", { requestId: recent.id }));
+    const inAmt = BigInt(recent.data.metadata.currencyIn.amount);
+    const dep = byHash.onChainDeposit;
+    // The depository credits Relay's `user`; the transaction sender can be someone else (a smart account's bundler, for example).
+    const recordedDepositor = recent.user || "";
+    check(`bridge_status by hash and by id agree (${byHash.requestId.slice(0, 12)}..., ${byHash.status}, ${byHash.from?.amount} -> ${byHash.to?.amount} on ${byHash.to?.chain})`,
+      byHash.requestId === recent.id && byId.requestId === recent.id && byHash.status === "success" && byHash.outTxs.length > 0);
+    check(`bridge_status reads the deposit on chain: RelayDepository event at block ${dep?.block}, ${dep?.amount}`,
+      dep?.found && dep.status === "success" && dep.depositor.toLowerCase() === recordedDepositor.toLowerCase()
+      && dep.sender.toLowerCase() === recent.data.inTxs[0].data.from.toLowerCase() && BigInt(dep.amountRaw) === inAmt);
+  } else { check("no finished ETH/USDG request out of Robinhood Chain to Holbric's chains in Relay's last 50 (status read not exercised)", true); check("(skipped)", true); }
+  const unknown = JSON.parse(await call("bridge_status", { requestId: "0x" + "ab".repeat(32) }));
+  check(`bridge_status on an unknown id says so (${unknown.status})`, unknown.status === "waiting" || unknown.status === "unknown");
+  await call("bridge_status", { txHash: "0x1234" }, /32-byte hex/);
+
+  // In-process: the order checks catch a tampered order even when the order id is recomputed to match it.
+  const R = await import("../src/relay.js");
+  const U = "0x000000000000000000000000000000000000dEaD", W = "0x1111111111111111111111111111111111111111";
+  const body = { user: U, recipient: U, refundTo: U, originChainId: 4663, destinationChainId: 8453, originCurrency: "0x0000000000000000000000000000000000000000",
+    destinationCurrency: "0x0000000000000000000000000000000000000000", amount: "10000000000000000", tradeType: "EXACT_INPUT", includeProtocolData: true, slippageTolerance: "50" };
+  const real = await (await fetch("https://api.relay.link/quote/v2", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+  const want = { from: { chain: R.resolveChain(4663), token: { address: "0x0000000000000000000000000000000000000000" } }, to: { chain: R.resolveChain(8453), token: { address: "0x0000000000000000000000000000000000000000" } },
+    amountIn: 10n ** 16n, recipient: U, refundTo: U, slippageBps: 50, minDeadline: Math.floor(Date.now() / 1000) + 60 };
+  check(`order id recomputed locally equals Relay's (${real.protocol.v2.orderId.slice(0, 18)}...)`, R.orderId(real.protocol.v2.orderData) === real.protocol.v2.orderId && R.checkOrder(real, want).length === 0);
+  const tamper = (fn, rehash = true) => { const t = structuredClone(real); fn(t.protocol.v2.orderData, t); if (rehash) t.protocol.v2.orderId = R.orderId(t.protocol.v2.orderData); return R.checkOrder(t, want); };
+  const cases = [
+    ["order id that does not match the order data", (o) => { o.salt = "1"; }, /not the hash of its order data/, false],
+    ["output paid to another address", (o) => { o.output.payments[0].recipient = W; }, /output goes to/],
+    ["an origin-chain refund paid to another address", (o) => { o.inputs[0].refunds.find((r) => r.chainId === "robinhood").recipient = W; }, /refund on robinhood goes to/],
+    ["a destination-chain refund paid to a third address", (o) => { o.inputs[0].refunds.find((r) => r.chainId === "base").recipient = W; }, /refund on base goes to/],
+    ["a fee to a third party", (o) => { o.fees.push({ recipientChainId: "base", recipient: W, currencyChainId: "base", currency: "0x0000000000000000000000000000000000000000", amount: "1000" }); }, /fees to a third party/],
+    ["a destination call", (o) => { o.output.calls.push("0x1234"); }, /destination call/],
+    ["a minimum 1% under the expected output", (o) => { o.output.payments[0].minimumAmount = ((BigInt(o.output.payments[0].expectedAmount) * 99n) / 100n).toString(); }, /guaranteed minimum/],
+    ["a bigger payment than asked", (o) => { o.inputs[0].payment.amount = "20000000000000000"; }, /payment is/],
+    ["another depository", (o, t) => { t.protocol.v2.paymentDetails.depository = W; }, /names depository/],
+    ["an expired deadline", (o) => { o.output.deadline = Math.floor(Date.now() / 1000) - 10; }, /deadline/],
+  ];
+  for (const [label, fn, re, rehash] of cases) { const p = tamper(fn, rehash !== false); check(`order check refuses ${label}: ${p[0] || "nothing flagged"}`, p.some((x) => re.test(x))); }
+
+  // Privacy and the opt-out, in-process.
+  const realFetch = globalThis.fetch; const sent = [];
+  globalThis.fetch = async (url, init) => { sent.push({ host: new URL(String(url)).host, body: init?.body || "" }); return realFetch(url, init); };
+  const wallet = (await import("../src/keystore.js")).walletAddress();
+  await R.bridgeQuote({ toChain: "base", token: "ETH", amount: "0.01" });
+  check("bridge_quote does not send the wallet address to Relay", sent.some((x) => x.host === "api.relay.link") && !sent.some((x) => x.body.toLowerCase().includes(wallet.slice(2).toLowerCase())));
+  sent.length = 0; process.env.HOLBRIC_NO_BRIDGES = "1";
+  let msg = ""; try { await R.bridgeQuote({ toChain: "base", token: "ETH", amount: "0.01" }); } catch (e) { msg = e.message; }
+  let msg2 = ""; try { await R.bridgeStatus({ requestId: "0x" + "ab".repeat(32) }); } catch (e) { msg2 = e.message; }
+  delete process.env.HOLBRIC_NO_BRIDGES;
+  check("HOLBRIC_NO_BRIDGES=1: bridge tools refuse and nothing reaches Relay", /turned off/.test(msg) && /turned off/.test(msg2) && !sent.some((x) => x.host === "api.relay.link"));
+  const { loadConfig, saveConfig } = await import("../src/config.js");
+  saveConfig({ ...loadConfig(), bridges: false }); sent.length = 0; msg = "";
+  try { await R.bridgeQuote({ toChain: "base", token: "ETH", amount: "0.01" }); } catch (e) { msg = e.message; }
+  saveConfig({ ...loadConfig(), bridges: true });
+  check("`holbric bridges off` (config) refuses the same way", /holbric bridges off/.test(msg) && !sent.some((x) => x.host === "api.relay.link"));
+  globalThis.fetch = async (url, init) => { if (new URL(String(url)).host === "api.relay.link") throw new TypeError("fetch failed"); return realFetch(url, init); };
+  R._resetChainsCache(); msg = "";
+  try { await R.bridgeQuote({ toChain: "base", token: "ETH", amount: "0.01" }); } catch (e) { msg = e.message; }
+  globalThis.fetch = realFetch;
+  check(`Relay API down: bridge_quote says so (${msg})`, /Relay API unreachable/.test(msg));
 }
 await client.close();
 console.log(`\n${pass} passed, ${fail} failed. Nothing was signed or sent.`);

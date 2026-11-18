@@ -2,7 +2,7 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.7.0 covers 8 projects with 32 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.8.0 covers 9 projects with 35 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
@@ -12,11 +12,12 @@ Version 0.7.0 covers 8 projects with 32 tools. Every integration below was teste
 | Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
 | KyberSwap aggregator | Holbric's own route against KyberSwap's for the same swap, side by side at one block. KyberSwap's output only counts after its router call is simulated on mainnet. `quote_swap`, `find_route` and `prepare_swap` use it too | `compare_quotes` |
+| Relay bridge | Quote ETH and stablecoin bridges between Robinhood Chain and Ethereum, Base, Arbitrum One, OP Mainnet or Unichain (both directions), bridge out of Robinhood Chain with a checked and simulated deposit, and follow a bridge by request id or hash | `bridge_quote`, `prepare_bridge`, `bridge_status` |
 | Morpho | Read lending markets (rates, utilization, liquidity, oracle price), any address's positions with health factor and liquidation price, and Vault V2 vaults. Read-only | `morpho_markets`, `morpho_position`, `morpho_vaults` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 9, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, KyberSwap 1, Morpho 3, Relay 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -42,7 +43,7 @@ The Holbric token is on Robinhood Chain mainnet. You don't need it to use any Ho
 Holbric is built around three rules:
 
 - **Approvals are exact.** When a token approval is needed, it is for the exact amount of that action, never unlimited.
-- **No Holbric fee.** You pay the network fee in ETH. Pool and curve fees are already counted in every quote. Holbric sends no fee or referral parameters to KyberSwap, and refuses a KyberSwap route or calldata that carries a fee.
+- **No Holbric fee.** You pay the network fee in ETH. Pool and curve fees are already counted in every quote. Holbric sends no fee or referral parameters to KyberSwap or Relay, and refuses a KyberSwap route or a Relay order that carries a fee.
 - **The key stays on your computer.** It is stored in `~/.holbric/keystore.json`, encrypted with scrypt and AES-256-GCM. No tool returns the key or the passphrase.
 
 ## Install
@@ -50,7 +51,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.7.0/holbric-0.7.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.8.0/holbric-0.8.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -67,6 +68,7 @@ holbric address
 holbric unlock | lock   # store or remove the passphrase file the server signs with
 holbric limit 50        # optional daily USD limit; `holbric limit off` removes it
 holbric aggregators off # use only Holbric's own routing; nothing is sent to KyberSwap (`on` turns it back)
+holbric bridges off     # turn off the Relay bridge tools; nothing is sent to Relay (`on` turns them back)
 holbric export          # show the key so you can back it up
 ```
 
@@ -106,6 +108,8 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | KyberSwap MetaAggregationRouterV2 | `0x6131B5fae19EA4f9D964eAc0408E4408b66337b5` (docs.kyberswap.com, Contracts & Addresses, Robinhood (ChainID: 4663); exact match on Sourcify: MetaAggregationRouterV2). The only router Holbric accepts from KyberSwap |
 | KyberSwap AggregationExecutorProxy | `0x8F10B468b06c6FD214B65F87778827F7D113f996` (same docs page). The only executor Holbric accepts in KyberSwap calldata |
 | KyberSwap API | `https://aggregator-api.kyberswap.com/robinhood/api/v1` (`/routes`, `/route/build`), third party |
+| RelayDepository | `0x4cD00E387622C35bDDB9b4c962C136462338BC31` (Relay's `/chains`, `protocol.v2.depository` for chain 4663; exact match on Sourcify: RelayDepository). The only contract Holbric deposits into for a bridge |
+| Relay API | `https://api.relay.link` (`/chains`, `/quote/v2`, `/requests/v2`, `/intents/status/v3`), third party |
 | Morpho Blue | `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010` (Morpho's address registry, `RobinhoodMainnet = 4663`; verified on Sourcify: Morpho) |
 | Morpho AdaptiveCurveIrm / VaultV2Factory | `0x2BD3d5965B26B51814AC95127B2b80dD6CcC0fa1` / `0x0FBad98595b0186dA120E41f77C102beb49f803c` (same registry; verified on Sourcify) |
 | Morpho API | `https://api.morpho.org/graphql`, third party: only the market listing flag and vault APY. No address is sent |
@@ -154,6 +158,25 @@ KyberSwap runs an aggregator on Robinhood Chain (chain slug `robinhood` in its A
 - **Privacy.** KyberSwap is a third-party API. A quote sends the two token addresses and the amount. `prepare_swap` also sends your wallet address as sender and recipient, but only when KyberSwap's quote is ahead. To turn it off, set `HOLBRIC_NO_AGGREGATORS=1` in the MCP server's environment, or run `holbric aggregators off`. `chain_status` shows whether it is on.
 - **No fees.** Holbric sends no fee or referral fields to KyberSwap. KyberSwap's request header and `source` field say `holbric`.
 
+### Relay bridge
+
+Relay (relay.link) runs a bridge with Robinhood Chain (chain id 4663) as a supported chain. Its `/chains` answer lists ETH and USDG as bridgeable there. Holbric covers Ethereum, Base, Arbitrum One, OP Mainnet and Unichain on the other side, with ETH to ETH, and USDG to USDG (Ethereum) or USDC (the others).
+
+- **Quotes, both directions.** `bridge_quote` returns Relay's expected output, its guaranteed minimum (your slippage limit, default 0.5%), its fee breakdown, its total cost and its time estimate, with the Robinhood Chain block at the time of the quote. These are Relay's figures, labelled as third-party. Example at block 117071566: 0.1 ETH from Robinhood Chain to Base, expected 0.099868739236507417 ETH, at least 0.09936939554032488 ETH, Relay's relayer fee 0.000131260763492583 ETH, estimate 1 second.
+- **The order is checked, not trusted.** Relay's quotes carry a protocol order. Holbric follows Relay's own input-validation guide. It recomputes the order id from the order data (EIP-712, the same types as Relay's settlement SDK; checked against the SDK during development). Then it checks the order:
+  - it pays exactly the token and amount asked, on Robinhood Chain;
+  - one output, to the recipient, in the token asked, on the chain asked;
+  - the guaranteed minimum is within the slippage limit;
+  - no destination calls and no fees to anyone;
+  - every refund on Robinhood Chain pays the wallet;
+  - the deadline is ahead.
+- **Bridging out: `prepare_bridge`.** Only the Robinhood Chain side is built: an exact USDG approval when needed, then `depositNative` or `depositErc20` on the RelayDepository above. That address must also be the depository Relay's `/chains` lists for chain 4663, or nothing is prepared. Holbric encodes the deposit itself (your wallet as depositor, the verified order id) and refuses if Relay's calldata differs by a byte, or if Relay asks for any other transaction or target. The recipient is your own wallet address unless you name another one, and the summary says so in capitals. The deposit is simulated on mainnet; the simulation must show exactly the deposit amount leaving to the depository and nothing else. `execute_prepared` re-simulates and also refuses when Relay's order deadline is near.
+- **What the simulation cannot show.** The delivery on the other chain is done later by Relay's solver, so it is not part of the simulation. If it does not happen, Relay refunds: on Robinhood Chain to your wallet (Holbric always sets `refundTo`), less the refund gas.
+- **Bridging in is quote-only.** Bridging into Robinhood Chain starts with a transaction on the other chain. Holbric only reads and simulates Robinhood Chain, so it does not build or sign that transaction. `bridge_quote` says so; use Relay's app or your wallet there.
+- **Status.** `bridge_status` takes a request id or a transaction hash and returns Relay's status, the deposit and fill transactions with explorer links, amounts, and any failure or refund reason. For a deposit on Robinhood Chain it also reads the receipt and decodes the RelayDepository event (sender, depositor, amount, order id).
+- **Privacy.** Relay is a third-party API. `bridge_quote` sends the chains, the tokens and the amount, and asks for a placeholder address, not your wallet. `prepare_bridge` sends your wallet address (sender and refund address) and the recipient. `bridge_status` sends the id or hash you ask about. To turn Relay off, set `HOLBRIC_NO_BRIDGES=1` in the MCP server's environment or run `holbric bridges off`; the bridge tools then refuse and nothing is sent. `chain_status` shows the setting. `HOLBRIC_NO_AGGREGATORS` only covers KyberSwap.
+- **No fees.** Relay's own fees are inside its quote and shown. Holbric adds none and sends no app fee or referrer.
+
 ### Morpho (read-only)
 
 Addresses come from Morpho's own registry, [`packages/morpho-ts/src/addresses.ts`](https://github.com/morpho-org/sdks/blob/main/packages/morpho-ts/src/addresses.ts) in morpho-org/sdks. Morpho Blue, the AdaptiveCurveIrm and the VaultV2Factory each have code on chain and are verified on Sourcify. The registry lists no MetaMorpho (vault V1) factory for chain 4663; vaults here are Morpho Vault V2.
@@ -184,8 +207,8 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 npm test                           # both suites below. Never signs.
 node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout,
                                    # KyberSwap comparisons, the opt-out, the fallback and the calldata checks, Morpho markets, positions and vaults
-                                   # checked against raw reads, portfolio totals, prepare refusals
-node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps included) with a throwaway wallet, simulates it on mainnet,
+                                   # checked against raw reads, portfolio totals, prepare refusals, Relay quotes, order checks, bridge status and the opt-out
+node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop, v4 and KyberSwap swaps and Relay deposits included) with a throwaway wallet, simulates it on mainnet,
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
 
@@ -195,4 +218,4 @@ See [CHANGELOG.md](./CHANGELOG.md) and [holbric.com/changelog](https://holbric.c
 
 ## Licence
 
-MIT. Holbric is independent software. It is not affiliated with Robinhood, Uniswap, KyberSwap, Morpho, Pons, GeckoTerminal or Sourcify, and nothing here is financial advice.
+MIT. Holbric is independent software. It is not affiliated with Robinhood, Uniswap, KyberSwap, Morpho, Relay, Pons, GeckoTerminal or Sourcify, and nothing here is financial advice.

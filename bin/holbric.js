@@ -17,6 +17,7 @@ const HELP = `holbric ${pkg.version} - one MCP connection to Robinhood Chain mai
   holbric tools                     List every tool, grouped by project
   holbric limit <usd|off>           Set or clear the daily USD spend limit for swaps
   holbric aggregators <on|off>      Compare with KyberSwap (third-party API, on by default) or use only Holbric's own routing
+  holbric bridges <on|off>          Relay bridge tools (third-party API, on by default); off sends nothing to Relay
   holbric export                    Show the private key in this terminal. Terminal only.
   holbric --version`;
 
@@ -130,6 +131,17 @@ async function main() {
     cfg.aggregators = v === "on";
     saveConfig(cfg);
     return console.log(`KyberSwap aggregator ${v}.${v === "on" && env ? " HOLBRIC_NO_AGGREGATORS is still set in this environment, which keeps it off." : ""}${v === "off" ? " Only Holbric's own Uniswap routing is used; nothing is sent to KyberSwap." : ""}`);
+  }
+  if (cmd === "bridges") {
+    const v = pos[0];
+    const cfg = loadConfig();
+    const env = /^(1|true|yes|on)$/i.test(process.env.HOLBRIC_NO_BRIDGES || "");
+    const state = () => (cfg.bridges === false || env ? "off" : "on");
+    if (!v) return console.log(`Relay bridging: ${state()}${env ? " (HOLBRIC_NO_BRIDGES is set)" : ""}. When on, bridge_quote sends the chains, tokens and amount to api.relay.link, prepare_bridge also sends the wallet address and recipient, and bridge_status sends the id or hash you ask about.`);
+    if (v !== "on" && v !== "off") { console.error("Use `holbric bridges on` or `holbric bridges off`."); process.exit(1); }
+    cfg.bridges = v === "on";
+    saveConfig(cfg);
+    return console.log(`Relay bridging ${v}.${v === "on" && env ? " HOLBRIC_NO_BRIDGES is still set in this environment, which keeps it off." : ""}${v === "off" ? " The bridge tools refuse and nothing is sent to Relay." : ""}`);
   }
   if (cmd === "connect") {
     const { connect } = await import("../src/connect.js");

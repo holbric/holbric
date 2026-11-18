@@ -16,7 +16,7 @@ export function ensureDir() {
   try { chmodSync(HOME(), 0o700); } catch {}
 }
 
-const DEFAULTS = { rpc: null, dailyLimitUsd: null, slippageBps: 50, aggregators: true };
+const DEFAULTS = { rpc: null, dailyLimitUsd: null, slippageBps: 50, aggregators: true, bridges: true };
 
 export function loadConfig() {
   const p = paths().config;

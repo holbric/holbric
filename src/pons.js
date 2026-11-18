@@ -133,7 +133,7 @@ export async function ponsQuote({ token, side, amount }) {
   const snipe = await c.readContract({ address: L.curve, abi: curveAbi, functionName: "currentSnipeTaxBps", args: [from] }).catch(() => null);
   const block = await c.getBlockNumber();
   return {
-    token: t, symbol, side, curve: L.curve, block: block.toString(), quotedAt: new Date().toISOString(),
+    token: t, symbol, side, curve: L.curve, pairToken: pair.native ? "ETH" : pair.address, block: block.toString(), quotedAt: new Date().toISOString(),
     amountIn: `${fmt(amountIn, inDec, 18)} ${side === "buy" ? pair.symbol : symbol}`,
     amountOut: `${fmt(out, outDec, side === "buy" ? 4 : 10)} ${side === "buy" ? symbol : pair.symbol}`, amountOutRaw: out.toString(),
     method: "eth_call simulation of the curve's own buy/sell with temporary balance overrides; nothing is signed",
