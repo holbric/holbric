@@ -5,7 +5,8 @@ import { publicClient, ADDR, fmt, addrLink, CHAIN_ID } from "./chain.js";
 import { walletAddress } from "./keystore.js";
 import { requireWallet, slippage, checkLimit, approveTx, store } from "./actions.js";
 import { tokenOverride } from "./storage.js";
-import { quote as uniQuote } from "./swap.js";
+import { quote as uniQuote, prepareSwap } from "./swap.js";
+import { ponsPool, poolState, priceFromSqrt } from "./v4.js";
 import factoryAbi from "./abi/pons-factory.json" with { type: "json" };
 
 const curveAbi = parseAbi([
@@ -47,21 +48,34 @@ export async function ponsToken({ token }) {
     c.readContract({ address: t, abi: erc20Abi, functionName: "balanceOf", args: ["0x000000000000000000000000000000000000dEaD"] }),
     c.getBlockNumber(),
   ]);
-  const price = Number(qR) / 10 ** pair.decimals / (Number(tR) / 1e18);
+  const graduated = grad || Number(L.phase) !== 0;
+  let v4 = null, price = Number(qR) / 10 ** pair.decimals / (Number(tR) / 1e18);
+  if (graduated) {
+    // After graduation the curve is closed; the live price is the Uniswap v4 pool's.
+    const p = await ponsPool(t);
+    if (p) {
+      const st = await poolState(p.key);
+      const p01 = priceFromSqrt(st.sqrtPriceX96, p.key.currency0 === t ? 18 : pair.decimals, p.key.currency1 === t ? 18 : pair.decimals);
+      price = p.key.currency0 === t ? p01 : 1 / p01;
+      v4 = { poolId: p.id, poolKey: p.key, liquidity: st.liquidity.toString(), tick: st.tick, lpFee: st.lpFee,
+        hookFeeBps: p.hookFeeBps, creatorTaxBps: p.creatorTaxBps, note: "Trades now go through this Uniswap v4 pool (Pons V2 hook). pons_quote and prepare_pons_trade use it." };
+    }
+  }
   let priceUsd = null;
   if (pair.native) { try { const q = await uniQuote({ tokenIn: "WETH", tokenOut: "USDG", amount: "1" }); priceUsd = price * Number(q.view.tokenOut.amountOut); } catch {} }
   else if (pair.address === ADDR.USDG) priceUsd = price;
   return {
     token: t, name, symbol, totalSupply: fmt(supply, 18, 4), deadAddressBalance: fmt(dead, 18, 4),
     curve: L.curve, deployer: L.deployer, creatorFeeRecipient: L.creatorFeeRecipient, pair: pair.symbol,
-    status: grad || Number(L.phase) !== 0 ? "graduated" : "bonding curve",
+    status: graduated ? "graduated" : "bonding curve",
     phase: Number(L.phase), readyToGraduate: ready,
-    pricePerToken: `${price.toPrecision(6)} ${pair.symbol}`, priceUsdApprox: priceUsd != null ? +priceUsd.toPrecision(6) : null,
+    pricePerToken: `${price.toPrecision(6)} ${pair.symbol}`, priceSource: graduated ? (v4 ? "Uniswap v4 pool slot0" : "curve reserves at graduation (no registered v4 pool found)") : "bonding curve reserves", priceUsdApprox: priceUsd != null ? +priceUsd.toPrecision(6) : null,
     marketCapUsdApprox: priceUsd != null ? Math.round(priceUsd * Number(supply) / 1e18) : null,
     curveRealReserve: `${fmt(real, pair.decimals, 6)} ${pair.symbol}`, graduationThreshold: `${fmt(thr, pair.decimals, 6)} ${pair.symbol}`,
-    progressPct: +((Number(real) / Number(thr)) * 100).toFixed(2),
+    progressPct: graduated ? 100 : +((Number(real) / Number(thr)) * 100).toFixed(2),
     curveFeeBps: Number(fee), creatorTaxBps: Number(tax),
     launchedAt: at ? new Date(Number(at) * 1000).toISOString() : null,
+    ...(v4 ? { uniswapV4Pool: v4 } : {}),
     block: block.toString(), explorer: addrLink(t), pons: `https://ponsfamily.com/launchpad/${t.toLowerCase()}`,
   };
 }
@@ -109,9 +123,8 @@ export async function ponsQuote({ token, side, amount }) {
   if (!/^\d+(\.\d+)?$/.test(String(amount))) throw new Error("amount must be a positive decimal string.");
   const { t, L } = await launched(token);
   const c = publicClient();
-  if (await c.readContract({ address: L.curve, abi: curveAbi, functionName: "graduated" }) || Number(L.phase) !== 0)
-    throw new Error("This Pons token has graduated from its bonding curve. Holbric does not trade graduated Pons pools yet.");
   const pair = await pairMeta(L);
+  if (await c.readContract({ address: L.curve, abi: curveAbi, functionName: "graduated" }) || Number(L.phase) !== 0) return graduatedQuote({ t, pair, side, amount });
   const symbol = await c.readContract({ address: t, abi: erc20Abi, functionName: "symbol" });
   const inDec = side === "buy" ? pair.decimals : 18, outDec = side === "buy" ? 18 : pair.decimals;
   const amountIn = parseUnits(String(amount), inDec);
@@ -128,7 +141,42 @@ export async function ponsQuote({ token, side, amount }) {
   };
 }
 
+/** The graduated Pons pool for a launch, or a plain error. */
+async function gradPool(t) {
+  const p = await ponsPool(t);
+  if (!p) throw new Error(`${t} has graduated, but the Pons V2 hook ${ADDR.PONS_HOOK} has no registered Uniswap v4 pool for it, so Holbric will not trade it.`);
+  return p;
+}
+const sideTokens = (t, pair, side) => (side === "buy" ? [pair.native ? "ETH" : pair.address, t] : [t, pair.native ? "ETH" : pair.address]);
+
+/** Quote a graduated Pons token on its own Uniswap v4 pool (Pons hook) with V4Quoter. */
+async function graduatedQuote({ t, pair, side, amount }) {
+  const p = await gradPool(t);
+  const [tokenIn, tokenOut] = sideTokens(t, pair, side);
+  const q = await uniQuote({ tokenIn, tokenOut, amount, poolKey: p.key });
+  return {
+    token: t, symbol: side === "buy" ? q.tOut.symbol : q.tIn.symbol, side, phase: "graduated", block: q.view.block, quotedAt: q.view.quotedAt,
+    amountIn: `${q.view.tokenIn.amount} ${q.tIn.symbol}`, amountOut: `${q.view.tokenOut.amountOut} ${q.tOut.symbol}`, amountOutRaw: q.view.tokenOut.amountOutRaw,
+    venue: `Uniswap v4 pool ${p.id} (Pons V2 hook ${ADDR.PONS_HOOK}), quoted with V4Quoter ${ADDR.V4_QUOTER}`,
+    poolKey: p.key, hookFeeBps: p.hookFeeBps, creatorTaxBps: p.creatorTaxBps, gasEstimate: q.view.gasEstimate,
+    method: "V4Quoter simulates the swap against the pool, including the Pons hook's fee and creator tax taken from the output; nothing is signed",
+  };
+}
+
 export async function preparePonsTrade({ token, side, amount, slippageBps }) {
+  if (side !== "buy" && side !== "sell") throw new Error('side must be "buy" or "sell".');
+  {
+    const { t, L } = await launched(token);
+    const grad = await publicClient().readContract({ address: L.curve, abi: curveAbi, functionName: "graduated" });
+    if (grad || Number(L.phase) !== 0) {
+      requireWallet();
+      const pair = await pairMeta(L);
+      const p = await gradPool(t);
+      const [tokenIn, tokenOut] = sideTokens(t, pair, side);
+      return prepareSwap({ tokenIn, tokenOut, amount, slippageBps, poolKey: p.key, kind: "pons_trade",
+        extraLines: [`This Pons token has graduated, so the trade goes through its Uniswap v4 pool ${p.id} (Pons V2 hook: ${p.hookFeeBps / 100}% fee, ${p.creatorTaxBps / 100}% creator tax, taken from the output and already inside the expected amount).`] });
+    }
+  }
   const from = requireWallet();
   const slip = slippage(slippageBps);
   const q = await ponsQuote({ token, side, amount });

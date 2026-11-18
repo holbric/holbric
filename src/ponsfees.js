@@ -123,7 +123,7 @@ export async function ponsCreatorFees({ token, curve, recipient }) {
       why: u.fee + u.tax === 0n ? "Nothing is pending right now." : u.needsOperator ? "A buyback or launch-token conversion is pending, so only the Pons sweep operator can sweep (InternalSwapRequiresOperator)." : "Pending fees need no internal swap, so the creator fee recipient can sweep them with prepare_pons_sweep.",
     },
     caveat: CAVEAT,
-    usdNote: a.usdPerQuote != null ? "USD values use the Uniswap v3 WETH/USDG pool price on Robinhood Chain." : "No USD price for the pair token.",
+    usdNote: a.usdPerQuote != null ? "USD values use the best Uniswap WETH/USDG quote (v3 or v4) on Robinhood Chain." : "No USD price for the pair token.",
     explorer: addrLink(a.escrow),
   };
 }

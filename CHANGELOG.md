@@ -2,6 +2,20 @@
 
 Dates below are calendar dates in Asia/Jakarta. This is the public record of Holbric releases and on-chain events that have already happened. Nothing here is a promise about the future.
 
+## 0.5.0 — 18 November 2026
+
+27 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v4 sits next to v3, and graduated Pons tokens can be traded again.
+
+- **v3 and v4 compared.** `quote_swap`, `find_route` and `prepare_swap` now quote Uniswap v4 routes next to v3 routes and take the better output (`venue: "best"` by default, or `"v3"` / `"v4"`). v4 pools are read by key from StateView `0xF3334192D15450CdD385c8B70e03f9A6bD9E673b` and quoted with V4Quoter `0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94`: hookless pools at the four standard keys, direct or 2 hops through native ETH, USDG and cbBTC. A route stays on one version.
+- **Graduated Pons tokens.** Once a launch leaves its bonding curve, `pons_token` reads the price from its v4 pool, and `pons_quote` and `prepare_pons_trade` trade on that pool. The pool key comes from the Pons factory record (pair token, pool fee, tick spacing) with the Pons V2 hook `0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044`, and the hook must list the pool as registered. Other routes can reach these pools too, for example USDG → ETH → ORBIT.
+- **New `v4_pools` and `quote_v4`.** Pool ids, keys, liquidity, price, tick and fees for a pair, and v4-only quotes, including on a pool key you name.
+- **Swaps on v4.** Through Universal Router 2.1.2 `0x204FAca1764B154221e35c0d20aBb3c525710498` with one `V4_SWAP` command (`SWAP_EXACT_IN_SINGLE` or `SWAP_EXACT_IN`, `SETTLE_ALL`, `TAKE_ALL`). Native ETH goes in as value and comes out as ETH. A token input is pulled through Permit2 `0x000000000022D473030F116dDEE9F6B43aC78BA3` with an exact ERC-20 approval and an exact allowance that expires after 30 minutes. Pools with unknown hooks are refused. The same minimum output, mainnet simulation and `execute_prepared` re-check apply.
+- **Tests.** Live tests check the derived Pons pool key against the PoolManager's own `Initialize` event, read v4 pools, and quote v4 routes and the graduated ORBIT pool. The write simulations prepare and re-check v4 swaps with native ETH in, Permit2 input, native ETH out, a 2-hop v4 route into a Pons pool, graduated Pons buys and sells, and the refusal of a worse result and of an unknown hook. Three v3 multi-hop simulations now pin `venue: "v3"`, because v4 can win those routes. Nothing is signed.
+
+Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2.
+
+Install from the [v0.5.0 release](https://github.com/holbric/holbric/releases/tag/v0.5.0). The package is not on the npm registry yet.
+
 ## 0.4.0 — 18 November 2026
 
 25 tools across 6 projects on Robinhood Chain mainnet (chain id 4663). Uniswap v3 swaps now find their own route, including 2-hop routes.

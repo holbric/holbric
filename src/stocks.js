@@ -40,7 +40,7 @@ export async function stockQuote({ stock, side = "sell", amount }) {
   const [tokenIn, tokenOut] = side === "buy" ? ["USDG", s.address] : [s.address, "USDG"];
   let q;
   try { q = await quote({ tokenIn, tokenOut, amount }); }
-  catch { throw new Error(`No Uniswap v3 pool against USDG quoted ${s.symbol} right now. There may be no pool for this stock token.`); }
+  catch { throw new Error(`No Uniswap v3 or v4 route against USDG quoted ${s.symbol} right now. There may be no pool for this stock token.`); }
   // Price impact vs a 1/100 size quote, so thin pools are obvious.
   const small = (Number(amount) / 100).toFixed(side === "buy" ? 6 : Math.min(s.decimals, 12));
   let impactPct = null;

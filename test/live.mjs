@@ -29,7 +29,7 @@ const call = async (name, args = {}, expect = "ok") => {
   check(`${name}${expect === "ok" ? "" : " refuses"}`, expect === "ok" ? !r.isError : !!r.isError && expect.test(text));
   return text;
 };
-check(`tool count is 25 (got ${tools.tools.length})`, tools.tools.length === 25);
+check(`tool count is 27 (got ${tools.tools.length})`, tools.tools.length === 27);
 const HOLBRIC = "0xE8D6AE09757769968d17eab44998A03E196217e7";
 await call("wallet_address");
 await call("chain_status");
@@ -52,6 +52,39 @@ check(`USDG -> BMNR best route is 2 hops through WETH (${bmnr.best.route})`, bmn
 check("find_route lists the alternatives it compared, all worse or equal", bmnr.alternatives.every((a) => BigInt(a.amountOutRaw) <= BigInt(bmnr.best.amountOutRaw)));
 const sell = JSON.parse(await call("find_route", { tokenIn: AMZN, tokenOut: "ETH", amount: "0.05" }));
 check(`AMZN -> ETH routes in 2 hops (${sell.best.route})`, sell.best.hops === 2);
+// Uniswap v4 (0.5.0). ORBIT is a Pons V2 launch that graduated to a v4 pool with the Pons hook.
+const ORBIT = "0xF1A947c6C7b8887ef6C09b8B088787b4d1fF8d0a", NATIVE = "0x0000000000000000000000000000000000000000";
+const PONS_HOOK = "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", ORBIT_POOL = "0x67d3f53386c92850be8a0bd4d174acaf97316850a216fb5b38d7f72711021042";
+// Independent check of the pool key: the PoolManager's own Initialize event for that pool id.
+{
+  const { publicClient } = await import("../src/chain.js");
+  const { parseAbiItem } = await import("viem");
+  const ev = parseAbiItem("event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)");
+  const logs = await publicClient().getLogs({ address: "0x8366a39CC670B4001A1121B8F6A443A643e40951", event: ev, args: { id: ORBIT_POOL }, fromBlock: 116806359n, toBlock: 116806359n });
+  const a = logs[0]?.args;
+  check("PoolManager Initialize event matches the Pons key Holbric derives (ETH/ORBIT, fee 0, tickSpacing 200, Pons hook)",
+    logs.length === 1 && a.currency0 === NATIVE && a.currency1 === ORBIT && a.fee === 0 && a.tickSpacing === 200 && a.hooks === PONS_HOOK);
+}
+const pools = JSON.parse(await call("v4_pools", { tokenA: "ETH", tokenB: ORBIT }));
+const pp = pools.pools.find((p) => p.poolId === ORBIT_POOL);
+check("v4_pools finds the graduated ORBIT pool, live, with the Pons hook", pp && pp.live && pp.poolKey.hooks === PONS_HOOK && pp.poolKey.fee === 0 && pp.poolKey.tickSpacing === 200);
+const ethUsdg = JSON.parse(await call("v4_pools", { tokenA: "ETH", tokenB: "USDG" }));
+check(`v4_pools: native ETH/USDG has live hookless pools (${ethUsdg.livePools})`, ethUsdg.livePools > 0 && ethUsdg.pools.every((p) => p.poolKey.hooks === NATIVE));
+const qv4 = JSON.parse(await call("quote_v4", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.1" }));
+check(`quote_v4 ETH -> USDG stays on v4 (${qv4.route})`, qv4.bestVenue === "Uniswap v4" && qv4.compared.v3Routes === 0 && BigInt(qv4.tokenOut.amountOutRaw) > 0n);
+const qkey = JSON.parse(await call("quote_v4", { tokenIn: "ETH", tokenOut: ORBIT, amount: "0.01", poolKey: { currency0: NATIVE, currency1: ORBIT, fee: 0, tickSpacing: 200, hooks: PONS_HOOK } }));
+check("quote_v4 with an explicit pool key quotes that pool only", qkey.compared.routesQuoted === 1 && qkey.poolIds[0] === ORBIT_POOL);
+await call("quote_v4", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", poolKey: { currency0: NATIVE, currency1: ORBIT, fee: 0, tickSpacing: 200, hooks: PONS_HOOK } }, /does not trade ETH/);
+const both = JSON.parse(await call("find_route", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.5" }));
+check(`find_route ETH -> USDG compares v3 and v4 (${both.compared.v3Routes} v3, ${both.compared.v4Routes} v4; best ${both.best.venue})`, both.compared.v3Routes > 0 && both.compared.v4Routes > 0 &&
+  [both.best, ...both.alternatives].some((r) => r.venue === "Uniswap v3") && [both.best, ...both.alternatives].some((r) => r.venue === "Uniswap v4") && both.alternatives.every((a) => BigInt(a.amountOutRaw) <= BigInt(both.best.amountOutRaw)));
+const toOrbit = JSON.parse(await call("quote_swap", { tokenIn: "USDG", tokenOut: ORBIT, amount: "20" }));
+check(`USDG -> ORBIT routes through ETH into the Pons pool on v4 (${toOrbit.route})`, toOrbit.bestVenue === "Uniswap v4" && toOrbit.hops === 2 && toOrbit.poolIds[1] === ORBIT_POOL);
+const pt = JSON.parse(await call("pons_token", { token: ORBIT }));
+check("pons_token on a graduated token reads its v4 pool", pt.status === "graduated" && pt.uniswapV4Pool?.poolId === ORBIT_POOL && pt.priceSource === "Uniswap v4 pool slot0");
+const pq = JSON.parse(await call("pons_quote", { token: ORBIT, side: "buy", amount: "0.01" }));
+check("pons_quote on a graduated token quotes its v4 pool", pq.phase === "graduated" && pq.venue.includes(ORBIT_POOL) && BigInt(pq.amountOutRaw) > 0n);
+await call("pons_quote", { token: ORBIT, side: "sell", amount: "100000" });
 await call("stock_tokens", { search: "TSLA", limit: 3 });
 await call("stock_quote", { stock: "NVDA", side: "sell", amount: "1" });
 await call("pons_token", { token: HOLBRIC });
@@ -74,6 +107,8 @@ await call("prepare_send", { to: "0x000000000000000000000000000000000000dEaD", t
 await call("prepare_wrap_eth", { amount: "0.001" }, EMPTY);
 await call("prepare_unwrap_weth", { amount: "0.001" }, EMPTY);
 await call("prepare_pons_trade", { token: HOLBRIC, side: "buy", amount: "0.001" }, EMPTY);
+await call("prepare_swap", { tokenIn: "ETH", tokenOut: "USDG", amount: "0.01", venue: "v4" }, EMPTY);
+await call("prepare_pons_trade", { token: ORBIT, side: "buy", amount: "0.001" }, EMPTY);
 await call("prepare_pons_claim", { asset: "ETH" }, EMPTY);
 await call("prepare_pons_sweep", { token: HOLBRIC }, EMPTY);
 await call("prepare_register_agent", { agentURI: "https://holbric.com/agent.json" }, EMPTY);

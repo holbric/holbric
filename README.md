@@ -2,19 +2,19 @@
 
 Holbric gives your AI agent one MCP connection to several projects on **Robinhood Chain mainnet** (chain id 4663). It works with Claude Code, Cursor, Codex, Gemini CLI, Windsurf, VS Code, or any MCP host that runs a local command.
 
-Version 0.4.0 covers 6 projects with 25 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
+Version 0.5.0 covers 6 projects with 27 tools. Every integration below was tested live against mainnet, and every write is simulated on mainnet before you are asked to sign it.
 
 | Project | What your agent can do | Tools |
 | --- | --- | --- |
 | Wallet (Robinhood Chain) | Show its address and balances, look up any token, send ETH or ERC-20s, wrap and unwrap WETH | `wallet_address`, `chain_status`, `get_balances`, `token_info`, `prepare_send`, `prepare_wrap_eth`, `prepare_unwrap_weth`, `execute_prepared` |
-| Uniswap v3 | Find the best route (direct pools at 0.01 / 0.05 / 0.3 / 1%, or 2 hops through WETH, USDG or cbBTC), quote it, and swap | `quote_swap`, `find_route`, `prepare_swap` |
+| Uniswap v3 and v4 | Find the best route across v3 and v4 (direct pools, or 2 hops through WETH, ETH, USDG or cbBTC), quote it, and swap; list v4 pools for a pair and quote on v4 alone | `quote_swap`, `find_route`, `prepare_swap`, `v4_pools`, `quote_v4` |
 | Robinhood Stock Tokens | Search the official stock token and ETF list (the one behind docs.robinhood.com/chain/contracts) and quote their Uniswap pools | `stock_tokens`, `stock_quote` |
-| Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
+| Pons V2 | Read a launch, list recent launches, quote and trade on the bonding curve or, after graduation, on the launch's Uniswap v4 pool, read creator fees (escrow and unswept, kept apart), sweep and claim them | `pons_token`, `pons_recent_launches`, `pons_quote`, `prepare_pons_trade`, `pons_creator_fees`, `prepare_pons_sweep`, `prepare_pons_claim` |
 | ERC-8004 | Look up agent identities and reputation, register an agent | `agent_identity`, `agent_reputation`, `prepare_register_agent` |
 | GeckoTerminal | Third-party prices, liquidity, and trending pools | `market_token`, `market_trending` |
 | Sourcify | Check whether a contract's source is verified, inside `token_info` | (part of `token_info`) |
 
-Tool count per project: Wallet 8, Uniswap v3 3, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
+Tool count per project: Wallet 8, Uniswap 5, Robinhood Stock Tokens 2, Pons V2 7, ERC-8004 3, GeckoTerminal 2. Signing for any write goes through `execute_prepared`.
 
 Site: [holbric.com](https://holbric.com) · X: [@holbriconrh](https://x.com/holbriconrh) · Source: [github.com/holbric/holbric](https://github.com/holbric/holbric)
 
@@ -48,7 +48,7 @@ Holbric is built around three rules:
 Node.js 22.12.0 or newer is required. Holbric is not on the npm registry yet, so install it from the GitHub release tarball or from this repository:
 
 ```sh
-npm install -g https://github.com/holbric/holbric/releases/download/v0.4.0/holbric-0.4.0.tgz
+npm install -g https://github.com/holbric/holbric/releases/download/v0.5.0/holbric-0.5.0.tgz
 # or
 git clone https://github.com/holbric/holbric.git
 cd holbric && npm install && npm install -g .
@@ -90,6 +90,10 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | USDG / WETH | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` / `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
 | Uniswap v3 factory | `0x1f7d7550B1b028f7571E69A784071F0205FD2EfA` (`factory()` on QuoterV2 and SwapRouter02 returns this address) |
 | Uniswap v3 QuoterV2 / SwapRouter02 | `0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7` / `0xCaf681a66D020601342297493863E78C959E5cb2` |
+| Uniswap v4 PoolManager | `0x8366a39CC670B4001A1121B8F6A443A643e40951` (exact match on Sourcify: PoolManager) |
+| Uniswap v4 V4Quoter / StateView | `0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94` / `0xF3334192D15450CdD385c8B70e03f9A6bD9E673b` (exact matches; `poolManager()` returns the PoolManager) |
+| Uniswap Universal Router 2.1.2 | `0x204FAca1764B154221e35c0d20aBb3c525710498` (exact match; constructor arguments name this PoolManager, Permit2, WETH and the v3 factory) |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 | cbBTC (route middle hop) | `0xCEC185eB182c47d1bA1EFc84e6959e18cd620Be4` (exact match on Sourcify, `name()` Coinbase Wrapped BTC) |
 | Pons V2 launch factory | `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e` (exact match on Sourcify: PonsV2LaunchFactory) |
 | Pons V2 fee escrow | `0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e` (exact match on Sourcify: PonsV2FeeEscrow) |
@@ -99,18 +103,29 @@ If one of these files already exists, Holbric saves a backup next to it as `<fil
 | Market data | `https://api.geckoterminal.com/api/v2/networks/robinhood` |
 | Verification | `https://sourcify.dev/server/v2/contract/4663/<address>` |
 
-### Uniswap v3 routing
+Uniswap v4 addresses are from the "Robinhood Chain: 4663" table on [docs.uniswap.org/contracts/v4/deployments](https://docs.uniswap.org/contracts/v4/deployments).
 
-`quote_swap`, `find_route` and `prepare_swap` share one router:
+### Uniswap routing (v3 and v4)
+
+`quote_swap`, `find_route` and `prepare_swap` share one router. By default it searches both versions (`venue: "best"`); `venue: "v3"` or `"v4"` limits it. A route stays on one version.
 
 1. Pools are read from the Uniswap v3 factory with `getPool` for the direct pair at every fee tier (0.01%, 0.05%, 0.3%, 1%) and for each leg through WETH, USDG and cbBTC. Pools with zero in-range liquidity are skipped, and at most 3 pools per leg are tried.
 2. Every candidate path is quoted with `QuoterV2.quoteExactInput` on the encoded path (token, fee, token, fee, token). The highest output wins; on a tie the shorter route wins.
 3. `prepare_swap` sends a direct route through SwapRouter02 `exactInputSingle` and a 2-hop route through `exactInput`, inside `multicall` with a 15-minute deadline. The minimum output comes from the slippage limit (default 0.5%), approvals are for the exact input amount, and native ETH is wrapped in and unwrapped out by the router.
 4. The summary shows the route (tokens and fee tiers), the pool addresses, and the next best routes it was compared with. The usual simulation and the re-check inside `execute_prepared` apply.
 
+Uniswap v4:
+
+1. v4 has no `getPool`: a pool is its key (currency0, currency1, fee, tickSpacing, hooks) and its id is `keccak256(abi.encode(key))`. Holbric checks the four hookless standard keys (0.01%/1, 0.05%/10, 0.3%/60, 1%/200) and, when one side is a graduated Pons V2 launch paired with the other, the key from the Pons factory record (`pairToken`, `poolFee`, `tickSpacing`) with the Pons V2 hook. The hook must list that pool id as registered. Pools with any other hook, or non-standard fees, are not used.
+2. In-range liquidity comes from `StateView.getLiquidity`. Routes are direct or 2 hops through native ETH, USDG and cbBTC. Each path is quoted with `V4Quoter.quoteExactInputSingle` or `quoteExactInput`, which runs the swap, hooks included.
+3. `prepare_swap` sends a v4 route through Universal Router 2.1.2 `execute` with one `V4_SWAP` command: `SWAP_EXACT_IN_SINGLE` or `SWAP_EXACT_IN`, then `SETTLE_ALL` and `TAKE_ALL` with the minimum output. Native ETH goes in as value and comes out as ETH. A token input needs an exact ERC-20 approval to Permit2 and an exact Permit2 allowance for the router that expires after 30 minutes; both are added only when missing.
+4. On v4, native ETH (`0x0`) and WETH are different currencies. ETH routes use native pools, WETH routes use WETH pools.
+
+The best output across v3 and v4 wins; on a tie the shorter route wins. `v4_pools` lists the v4 pools Holbric can see for a pair (id, key, liquidity, price, tick, fees) and `quote_v4` quotes on v4 alone, optionally on one pool key you give it.
+
 Robinhood Stock Tokens are never used as a middle hop. A stock token with no direct pool against your input can still be reached: for example ETH to AMZN goes ETH → USDG → AMZN, because the factory has no live WETH/AMZN pool.
 
-Pons quotes come from an `eth_call` simulation of the curve's own `buy` / `sell` functions, with temporary balance overrides. Nothing is signed during a quote. Tokens that have graduated from their curve are not traded yet.
+Pons quotes come from an `eth_call` simulation of the curve's own `buy` / `sell` functions, with temporary balance overrides. Nothing is signed during a quote. Once a token has graduated, `pons_token` reads its price from the v4 pool, and `pons_quote` and `prepare_pons_trade` use that pool through V4Quoter and the Universal Router. The Pons hook takes its fee and the creator tax from each swap's output; both are inside the quoted amount.
 
 ### Pons creator fees
 
@@ -122,8 +137,8 @@ Per the [Pons V2 docs](https://docs.ponsfamily.com/v2), a trade does not credit 
 
 ```sh
 npm test                           # both suites below. Never signs.
-node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop routes, the HOLBRIC creator-fee readout, prepare refusals
-node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop swaps included) with a throwaway wallet, simulates it on mainnet,
+node test/live.mjs                 # live, over MCP stdio: read tools, multi-hop and v4 routes, a graduated Pons pool, the HOLBRIC creator-fee readout, prepare refusals
+node test/simulate-writes.mjs      # builds every prepare_* action (multi-hop and v4 swaps included) with a throwaway wallet, simulates it on mainnet,
                                    # re-checks it like execute_prepared, and checks the refusal paths. Never signs.
 ```
 

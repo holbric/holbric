@@ -19,6 +19,16 @@ export const ADDR = {
   // Pons V2 fee escrow (Sourcify exact match: PonsV2FeeEscrow) and meme hook (PonsV2MemeHook). docs.ponsfamily.com/v2#contracts
   PONS_ESCROW: getAddress("0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e"),
   PONS_HOOK: getAddress("0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044"),
+  // Uniswap v4 on Robinhood Chain (docs.uniswap.org/contracts/v4/deployments, "Robinhood Chain: 4663"). Each one is an exact
+  // match on Sourcify (PoolManager, V4Quoter, StateView, UniversalRouter) and the periphery contracts' poolManager() returns
+  // V4_POOL_MANAGER on chain. UNIVERSAL_ROUTER is "Universal Router 2.1.2"; its Sourcify constructor arguments name this
+  // PoolManager, Permit2, WETH, the v3 factory above and V4_POSITION_MANAGER.
+  V4_POOL_MANAGER: getAddress("0x8366a39cc670b4001a1121b8f6a443a643e40951"),
+  V4_QUOTER: getAddress("0x8dc178efb8111bb0973dd9d722ebeff267c98f94"),
+  V4_STATE_VIEW: getAddress("0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"),
+  V4_POSITION_MANAGER: getAddress("0x58daec3116aae6d93017baaea7749052e8a04fa7"),
+  UNIVERSAL_ROUTER: getAddress("0x204FAca1764B154221e35c0d20aBb3c525710498"),
+  PERMIT2: getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3"),
   // ERC-8004 registries (proxies; implementations exact match on Sourcify).
   ERC8004_IDENTITY: getAddress("0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
   ERC8004_REPUTATION: getAddress("0x8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
